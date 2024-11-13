@@ -11,7 +11,7 @@ work_dir = None
 
 
 total_batch_size = 8
-num_gpus = 4
+num_gpus = 2
 batch_size = total_batch_size // num_gpus
 num_iters_per_epoch = int(28130 // (num_gpus * batch_size))
 # num_iters_per_epoch = int(100// (num_gpus * batch_size))
@@ -125,7 +125,7 @@ use_mask_token = False
 use_semantic = True  
 pred_occ = True
 use_occ_loss = False
-img_to_voxel = True
+img_to_voxel = False
 use_temporal=True
 up_sample = True
 # use_occ_focal_loss = True
@@ -142,15 +142,16 @@ save_final_voxel_feature = False
 use_vox_atten = True
 top_k_thr = 0.25
 _num_points_self_ = 6
-with_o2m = True
+with_o2m = False
 use_different_aug = True
 _pos_dim_ = [96, 96, 64]
-use_mask_head = True
-concat_final=True
+use_mask_head = False
+
 
 model = dict(
-    type="Sparse4D_BEVDepth",
+    type="Sparse4D",
     use_grid_mask=False,
+    num_levels=num_levels,
     grid_config = grid_config,
     use_voxel_feature=use_voxel_feature,
     pred_occ=pred_occ,
@@ -162,6 +163,13 @@ model = dict(
     downsample_list = downsample_list,
     occ_pred_weight=occ_pred_weight,
     occ_seqeunce = occ_seqeunce,
+    positional_encoding=dict(
+        type='CustomLearnedPositionalEncoding3D',
+        num_feats=_pos_dim_,
+        row_num_embed=100,
+        col_num_embed=100,
+        tub_num_embed=8
+    ),
     img_backbone=dict(
         type='ResNet',
         depth=50,
@@ -186,31 +194,11 @@ model = dict(
         out_channels=embed_dims,
         num_outs=num_levels,
         start_level=0,
+        mid_level=num_levels-2,
         out_ids=[0, 1, 2, 3],
     ),
-    # img_neck=dict(
-    #     type='FPN',
-    #     in_channels=[512, 1024, 2048],
-    #     out_channels=256,
-    #     start_level=0,
-    #     add_extra_convs='on_output',
-    #     num_outs=4,
-    #     relu_before_extra_convs=True
-    # ),
-    # img_view_transformer=dict(
-    #     type='LSSViewTransformerBEVDepth',
-    #     grid_config=grid_config_stereo,
-    #     input_size=data_config['input_size'],
-    #     collapse_z=False,
-    #     sid=False,
-    #     in_channels=embed_dims,
-    #     out_channels=32,
-    #     loss_depth_weight=0.5,
-    #     depthnet_cfg=dict(use_dcn=False, aspp_mid_channels=96),
-    #     downsample=16,
-    # ),    
     img_view_transformer=dict(
-        type='LSSViewTransformerBEVStereo',
+        type='LSSViewTransformerBEVDepth',
         grid_config=grid_config_stereo,
         input_size=data_config['input_size'],
         in_channels=embed_dims,
@@ -218,11 +206,17 @@ model = dict(
         sid=False,
         collapse_z=False,
         loss_depth_weight=0.05,
-        depthnet_cfg=dict(use_dcn=False,
-                          aspp_mid_channels=96,
-                          stereo=True,
-                          bias=5.),
+        depthnet_cfg=dict(use_dcn=False, aspp_mid_channels=96),
         downsample=16
+    ),
+    inter_voxel_net=dict(
+        type='CustomResNet3D',
+        numC_input=numC_Trans,
+        with_cp=False,
+        num_layer=[1,],
+        num_channels=[embed_dims,],
+        stride=[2,],
+        backbone_output_ids=[0,]
     ),
     voxel_encoder_backbone=dict(
         type='CustomResNet3D',
@@ -235,25 +229,9 @@ model = dict(
     voxel_encoder_neck=dict(type='LSSFPN3D',
                               in_channels=numC_Trans*7,
                               out_channels=numC_Trans),
-    inter_voxel_net=dict(
-        type='CustomResNet3D',
-        numC_input=numC_Trans,
-        with_cp=False,
-        num_layer=[1,],
-        num_channels=[embed_dims,],
-        stride=[2,],
-        backbone_output_ids=[0,]
-    ),
     Vox_Convnet=dict(
         type='Vox_Convnet',
         embed_dims=embed_dims,
-        positional_encoding=dict(
-            type='CustomLearnedPositionalEncoding3D',
-            num_feats=_pos_dim_,
-            row_num_embed=100,
-            col_num_embed=100,
-            tub_num_embed=8
-        ),
         temporal_layers = temporal_layers,
         current_layers = current_layers, 
         up_sample= up_sample,
@@ -264,7 +242,7 @@ model = dict(
             type='CustomResNet3D',
             numC_input=embed_dims,
             with_cp=False,
-            num_layer=[2,],
+            num_layer=[1,],
             num_channels=[embed_dims,],
             stride=[1,],
             backbone_output_ids=[0,]
@@ -291,11 +269,11 @@ model = dict(
         use_sigmoid=False,
         loss_weight=10.0
     ),
-    # loss_occupancy_aux = dict(
-    #     type = 'Lovasz3DLoss',
-    #     ignore = 17,
-    #     loss_weight=1.0
-    # ),
+    loss_occupancy_aux = dict(
+        type = 'Lovasz3DLoss',
+        ignore = 17,
+        loss_weight=1.0
+    ),
     head=dict(
         type="Sparse4DHead",
         cls_threshold_to_reg=0.05,
@@ -321,7 +299,7 @@ model = dict(
             type="InstanceBank",
             num_anchor=900,
             embed_dims=embed_dims,
-            anchor="nuscenes_kmeans900.npy",
+            anchor="_nuscenes_kmeans900.npy",
             anchor_handler=dict(type="SparseBox3DKeyPointsGenerator"),
             num_temp_instances=600 if temporal else -1,
             confidence_decay=0.6,
@@ -595,142 +573,141 @@ model = dict(
         decoder=dict(type="SparseBox3DDecoder"),
         reg_weights=[2.0] * 3 + [1.0] * 7,
     ),
-    mask_decoder_head=dict(
-        type='MaskHead',
-        concat_final=concat_final,
-        in_channels=numC_Trans,
-        embed_dims=embed_dims,
-        num_query=100,
-        group_detr=group_detr,
-        group_classes=group_classes,
-        num_classes=17,
-        # positional_encoding=dict(
-        #     type='CustomLearnedPositionalEncoding3D',
-        #     num_feats=_pos_dim_,
-        #     row_num_embed=100,
-        #     col_num_embed=100,
-        #     tub_num_embed=8
-        # ),
-        # transformer=dict(
-        #     type='TransformerMSOcc',
-        #     embed_dims=embed_dims,
-        #     num_feature_levels=4,
-        #     encoder=dict(
-        #         type='OccEncoder',
-        #         num_layers=1,
-        #         grid_config=grid_config,
-        #         data_config=data_config,
-        #         pc_range=point_cloud_range,
-        #         return_intermediate=False,
-        #         fix_bug=True,
-        #         transformerlayers=dict(
-        #             type='OccFormerLayer',
-        #             attn_cfgs=[
-        #                 dict(
-        #                     type='MultiScaleDeformableAttention3D',
-        #                     embed_dims=embed_dims,
-        #                     num_levels=1,
-        #                     num_points=4),
-        #                 dict(
-        #                     type='SpatialCrossAttention',
-        #                     pc_range=point_cloud_range,
-        #                     deformable_attention=dict(
-        #                         type='MSDeformableAttention3D',
-        #                         embed_dims=embed_dims,
-        #                         num_points=6,
-        #                         num_levels=4),
-        #                     embed_dims=embed_dims,)
-        #             ],
-        #             ffn_embed_dims=embed_dims,
-        #             feedforward_channels=embed_dims*2,
-        #             ffn_dropout=0.1,
-        #             operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
-        #                             'ffn', 'norm')))),
-        transformer_decoder=dict(
-            type='MaskOccDecoder',
-            return_intermediate=True,
-            num_layers=1,
-            transformerlayers=dict(
-                type='MaskOccDecoderLayer',
-                attn_cfgs=[
-                    dict(
-                        type='MultiScaleDeformableAttention3D',
-                        embed_dims=embed_dims,
-                        num_levels=1,
-                        num_points=4,),
-                    dict(
-                        type='GroupMultiheadAttention',
-                        group=group_detr,
-                        embed_dims=embed_dims,
-                        num_heads=8,
-                        dropout=0.1),
-                ],
-                feedforward_channels=2*embed_dims,
-                ffn_dropout=0.1,
-                operation_order=('cross_attn', 'norm', 'self_attn', 'norm',
-                                    'ffn', 'norm'))),
-        predictor=dict(
-            type='MaskPredictorHead_Group',
-            nbr_classes=17,
-            group_detr=group_detr,
-            group_classes=group_classes,
-            in_dims=embed_dims,
-            hidden_dims=2*embed_dims,
-            out_dims=embed_dims,
-            mask_dims=embed_dims),
-        use_camera_mask=True,
-        use_lidar_mask=False,
-        # cls_freq=nusc_class_frequencies,
-        loss_occ=dict(
-            type='CrossEntropyLoss',
-            use_sigmoid=False,
-            loss_weight=10.0),
-        loss_cls= dict(
-            type='CrossEntropyLoss',
-            use_sigmoid=False,
-            loss_weight=1.0,
-            reduction='mean',
-            class_weight=[1.0] * 17 + [0.1]),
-        loss_mask= dict(
-            type='FocalLoss',
-            use_sigmoid=True,
-            gamma=2.0,
-            alpha=0.25,
-            reduction='mean',
-            loss_weight=20.0),
-        loss_dice= dict(
-            type='DiceLoss',
-            use_sigmoid=True,
-            activate=True,
-            reduction='mean',
-            naive_dice=True,
-            eps=1.0,
-            loss_weight=1.0)),
-    # model training and testing settings
-    train_cfg=dict(
-        pts=dict(
-            out_size_factor=4,
-            # default cfg copy from MaskFormer
-            assigner=dict(
-                type='MaskHungarianAssigner3D',
-                cls_cost=dict(type='MaskClassificationCost', weight=1.0),
-                mask_cost=dict(type='MaskFocalLossCost', weight=20.0, binary_input=True),
-                dice_cost=dict(type='MaskDiceLossCost', weight=1.0, pred_act=True, eps=1.0),
-                use_camera_mask=True,
-                use_lidar_mask=False),
-            sampler=dict(
-                type='MaskPseudoSampler',
-                use_camera_mask=True,
-                use_lidar_mask=False)
-        )),
-    test_cfg=dict(
-        pts=dict(
-            mask_threshold = 0.7,
-            overlap_threshold = 0.8,
-            occupy_threshold = 0.3,
-            inf_merge=True,
-            only_encoder=False
-        )),
+    # mask_decoder_head=dict(
+    #     type='MaskHead',
+    #     in_channels=embed_dims,
+    #     embed_dims=embed_dims,
+    #     num_query=100,
+    #     group_detr=group_detr,
+    #     group_classes=group_classes,
+    #     num_classes=17,
+    #     positional_encoding=dict(
+    #         type='CustomLearnedPositionalEncoding3D',
+    #         num_feats=_pos_dim_,
+    #         row_num_embed=100,
+    #         col_num_embed=100,
+    #         tub_num_embed=8
+    #     ),
+    #     transformer=dict(
+    #         type='TransformerMSOcc',
+    #         embed_dims=embed_dims,
+    #         num_feature_levels=4,
+    #         encoder=dict(
+    #             type='OccEncoder',
+    #             num_layers=1,
+    #             grid_config=grid_config,
+    #             data_config=data_config,
+    #             pc_range=point_cloud_range,
+    #             return_intermediate=False,
+    #             fix_bug=True,
+    #             transformerlayers=dict(
+    #                 type='OccFormerLayer',
+    #                 attn_cfgs=[
+    #                     dict(
+    #                         type='MultiScaleDeformableAttention3D',
+    #                         embed_dims=embed_dims,
+    #                         num_levels=1,
+    #                         num_points=4),
+    #                     dict(
+    #                         type='SpatialCrossAttention',
+    #                         pc_range=point_cloud_range,
+    #                         deformable_attention=dict(
+    #                             type='MSDeformableAttention3D',
+    #                             embed_dims=embed_dims,
+    #                             num_points=6,
+    #                             num_levels=4),
+    #                         embed_dims=embed_dims,)
+    #                 ],
+    #                 ffn_embed_dims=embed_dims,
+    #                 feedforward_channels=embed_dims*2,
+    #                 ffn_dropout=0.1,
+    #                 operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+    #                                 'ffn', 'norm')))),
+    #     transformer_decoder=dict(
+    #         type='MaskOccDecoder',
+    #         return_intermediate=True,
+    #         num_layers=1,
+    #         transformerlayers=dict(
+    #             type='MaskOccDecoderLayer',
+    #             attn_cfgs=[
+    #                 dict(
+    #                     type='MultiScaleDeformableAttention3D',
+    #                     embed_dims=embed_dims,
+    #                     num_levels=1,
+    #                     num_points=4,),
+    #                 dict(
+    #                     type='GroupMultiheadAttention',
+    #                     group=group_detr,
+    #                     embed_dims=embed_dims,
+    #                     num_heads=8,
+    #                     dropout=0.1),
+    #             ],
+    #             feedforward_channels=2*embed_dims,
+    #             ffn_dropout=0.1,
+    #             operation_order=('cross_attn', 'norm', 'self_attn', 'norm',
+    #                                 'ffn', 'norm'))),
+    #     predictor=dict(
+    #         type='MaskPredictorHead_Group',
+    #         nbr_classes=17,
+    #         group_detr=group_detr,
+    #         group_classes=group_classes,
+    #         in_dims=embed_dims,
+    #         hidden_dims=2*embed_dims,
+    #         out_dims=embed_dims,
+    #         mask_dims=embed_dims),
+    #     use_camera_mask=True,
+    #     use_lidar_mask=False,
+    #     # cls_freq=nusc_class_frequencies,
+    #     loss_occ=dict(
+    #         type='CrossEntropyLoss',
+    #         use_sigmoid=False,
+    #         loss_weight=10.0),
+    #     loss_cls= dict(
+    #         type='CrossEntropyLoss',
+    #         use_sigmoid=False,
+    #         loss_weight=1.0,
+    #         reduction='mean',
+    #         class_weight=[1.0] * 17 + [0.1]),
+    #     loss_mask= dict(
+    #         type='FocalLoss',
+    #         use_sigmoid=True,
+    #         gamma=2.0,
+    #         alpha=0.25,
+    #         reduction='mean',
+    #         loss_weight=20.0),
+    #     loss_dice= dict(
+    #         type='DiceLoss',
+    #         use_sigmoid=True,
+    #         activate=True,
+    #         reduction='mean',
+    #         naive_dice=True,
+    #         eps=1.0,
+    #         loss_weight=1.0)),
+    # # model training and testing settings
+    # train_cfg=dict(
+    #     pts=dict(
+    #         out_size_factor=4,
+    #         # default cfg copy from MaskFormer
+    #         assigner=dict(
+    #             type='MaskHungarianAssigner3D',
+    #             cls_cost=dict(type='MaskClassificationCost', weight=1.0),
+    #             mask_cost=dict(type='MaskFocalLossCost', weight=20.0, binary_input=True),
+    #             dice_cost=dict(type='MaskDiceLossCost', weight=1.0, pred_act=True, eps=1.0),
+    #             use_camera_mask=True,
+    #             use_lidar_mask=False),
+    #         sampler=dict(
+    #             type='MaskPseudoSampler',
+    #             use_camera_mask=True,
+    #             use_lidar_mask=False)
+    #     )),
+    # test_cfg=dict(
+    #     pts=dict(
+    #         mask_threshold = 0.7,
+    #         overlap_threshold = 0.8,
+    #         occupy_threshold = 0.3,
+    #         inf_merge=True,
+    #         only_encoder=False
+    #     )),
 )
 
 # ================== data ========================
@@ -763,7 +740,7 @@ train_pipeline = [
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(
         type="CircleObjectRangeFilter",
-        class_dist_thred=[55] * len(class_names),
+        class_dist_thred=[42] * len(class_names),
     ),
     dict(type="InstanceNameFilter", classes=class_names),
     # dict(type='LoadOccupancy', use_semantic=use_semantic),
@@ -797,7 +774,7 @@ test_pipeline = [
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(
         type="CircleObjectRangeFilter",
-        class_dist_thred=[55] * len(class_names),
+        class_dist_thred=[42] * len(class_names),
     ),
     # dict(type='LoadOccupancy', use_semantic=use_semantic),
     dict(type="NuScenesSparse4DAdaptor"),
@@ -889,21 +866,9 @@ optimizer = dict(
     type="AdamW",
     lr=2e-4,
     weight_decay=0.01,
-    # eps=0.00001,
-    # paramwise_cfg=dict(
-    #     custom_keys={
-    #         "img_backbone": dict(lr_mult=0.1),
-    #     }
-    # ),
 )
 optimizer_config = dict(grad_clip=dict(max_norm=5, norm_type=2))
-# lr_config = dict(
-#     policy="CosineAnnealing",
-#     warmup="linear",
-#     warmup_iters=500,
-#     warmup_ratio=1.0 / 3,
-#     min_lr_ratio=1e-2,
-# )
+
 lr_config = dict(
     policy='step',
     warmup='linear',
@@ -932,15 +897,15 @@ evaluation = dict(
 )
 
 
-# custom_hooks = [
-#     dict(
-#         type='MEGVIIEMAHook',
-#         init_updates=10560,
-#         priority='NORMAL',
-#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-#     ),
-#     dict(
-#         type='SyncbnControlHook',
-#         syncbn_start_iter=0,
-#     ),
-# ]
+custom_hooks = [
+    dict(
+        type='MEGVIIEMAHook',
+        init_updates=10560,
+        priority='NORMAL',
+        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+    ),
+    dict(
+        type='SyncbnControlHook',
+        syncbn_start_iter=0,
+    ),
+]

@@ -404,7 +404,7 @@ class CustomFPN(BaseModule):
     def forward(self, inputs):
         """Forward function."""
         assert len(inputs) == len(self.in_channels)
-
+        laterals_copy = None
         # build laterals
         laterals = [
             lateral_conv(inputs[i + self.start_level])
@@ -456,7 +456,7 @@ class CustomFPN(BaseModule):
                         outs.append(self.fpn_convs[i](outs[-1]))
         if self.use_DETR:
             return outs[0], laterals_copy
-        return outs[0]
+        return outs[0], laterals_copy
 
 
 

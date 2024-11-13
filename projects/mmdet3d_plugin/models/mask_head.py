@@ -142,7 +142,7 @@ class MaskHead(BaseModule):
                             bias=True,
                             conv_cfg=dict(type='Conv3d'))
         else:
-            self.enhance_projs = Conv3d(embed_dims, embed_dims, kernel_size=1)
+            # self.enhance_projs = Conv3d(embed_dims, embed_dims, kernel_size=1)
             self.up1 = nn.Sequential(
                 # nn.ConvTranspose3d(embed_dims,embed_dims//2,(3,3,3),padding=(1,1,1)),
                 # nn.BatchNorm3d(embed_dims//2),
@@ -176,9 +176,9 @@ class MaskHead(BaseModule):
             self.occ_predictor_2 =nn.Linear(in_channels, num_classes+1)
         else:
             self.occ_predictor_1 = nn.Sequential(
-                        nn.Linear(embed_dims, embed_dims//2),
+                        nn.Linear(embed_dims, in_channels),
                         nn.Softplus())
-            self.occ_predictor_2 =nn.Linear(embed_dims//2, num_classes+1)
+            self.occ_predictor_2 =nn.Linear(in_channels, num_classes+1)
 
     def init_weights(self):
         """Initialize weights of the DeformDETR head."""
@@ -238,8 +238,8 @@ class MaskHead(BaseModule):
                 enhanced_occ_feature = enhanced_occ_feature.permute(0, 2, 1).view(bs, -1, occ_h, occ_w, occ_z)
                 compact_occ = self.enhance_projs(enhanced_occ_feature).permute(0,1,4,2,3)   # [b, c, h, w, z] -> [b, c, z, h, w]
             else:
-                enhanced_occ_feature = occ_feature
-                compact_occ = self.enhance_projs(occ_feature.permute(0, 1, 4, 2, 3)) # [b, c, h, w, z] -> [b, c', z, h, w]
+                compact_occ = occ_feature.permute(0, 1, 4, 2, 3) #[b, c, h, w, z] -> [b, c', z, h, w]
+                # compact_occ = self.enhance_projs(occ_feature.permute(0, 1, 4, 2, 3)) # [b, c, h, w, z] -> [b, c', z, h, w]
 
         if self.use_COTR_version is False:
             occ_1 = self.up1(compact_occ)
@@ -315,9 +315,15 @@ class MaskHead(BaseModule):
                 occupancy_mask = torch.logical_and(mask, occupancy_mask)      
             # (occupancy_scores_argmax <= 10) or (occupancy_scores_argmax==17)
             out_occ_mask_feature = fullres_occ_inter*occupancy_mask[:,None,...].bool()
-            out_occ_feature = out_occ_mask_feature.clone().detach()
+            if self.training:
+                out_occ_feature = out_occ_mask_feature.clone()
+            else:
+                out_occ_feature = out_occ_mask_feature
         else:
-            out_occ_feature = compact_occ.clone().detach()
+            if self.training:
+                out_occ_feature = compact_occ.clone()
+            else:
+                out_occ_feature = compact_occ
         if self.training or not self.test_cfg.only_encoder:
             # if instance_queries is not None:
             #     decoder_out = torch.cat([decoder_out, instance_queries.unsqueeze(0).permute(0,2,1,3)], dim=1)
@@ -729,7 +735,8 @@ class MaskHead(BaseModule):
         occ_outs = occ_outs.softmax(-1)
         occ_outs = occ_outs.argmax(-1)
         if self.test_cfg.only_encoder:
-            return occ_outs
+            occ_dict['occ'] = occ_outs.squeeze(dim=0).cpu().numpy().astype(np.uint8)
+            return occ_dict
         mask_cls_results = preds_dicts['maskocc_outs']['cls_preds'][0][-1] #[bs, N, num_class]
         mask_pred_results = preds_dicts['maskocc_outs']['mask_preds'][-1] #[bs, N, W, H, Z]
 

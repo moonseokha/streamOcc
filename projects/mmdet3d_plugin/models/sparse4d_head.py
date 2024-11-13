@@ -129,9 +129,9 @@ class Sparse4DHead(BaseModule):
         self.prediction_length = 0
         
         
-        if use_vox_atten:
-            self.positional_encoding = build_positional_encoding(positional_encoding)
-            self.mask_embed = nn.Embedding(1, embed_dims)
+        # if use_vox_atten:
+        #     self.positional_encoding = build_positional_encoding(positional_encoding) if positional_encoding is not None else None
+            # self.mask_embed = nn.Embedding(1, embed_dims)
 
         if reg_weights is None:
             self.reg_weights = [1.0] * 10
@@ -337,22 +337,25 @@ class Sparse4DHead(BaseModule):
         depth: List[torch.Tensor] = None,
         spatial_shapes: torch.Tensor = None,
         level_start_index: torch.Tensor = None,
+        occ_pos: torch.Tensor = None,
+        ref_3d: torch.Tensor = None,
     ):
         if "voxel_concat" in self.operation_order:
             # voxel_feature = voxel_feature.detach()
             pre_voxel_feature = voxel_feature.clone() # [B, H, W, D, C]
-        ref_3d = None
         voxel_pos = None
         voxel_feature_occ = None
-        if self.use_vox_atten:
-            B, Y, X, Z, C = voxel_feature.shape
-            mask_token =  self.mask_embed.weight.view(1,1,1,1,C).expand(B,Y,X,Z,C).to(voxel_feature.dtype)
-            voxel_feature = torch.where(voxel_feature == 0, mask_token, voxel_feature)            
-            voxel_pos = self.positional_encoding(torch.zeros((B,Y,X,Z), device=voxel_feature.device).to(voxel_feature.dtype)).to(voxel_feature.dtype) # [B, dim, 100*8, 100]
-            # voxel_pos = voxel_pos.flatten(2).permute(0,2,1).reshape(B,Y,X,Z,C)
-            # voxel_feature += voxel_pos
-            ref_3d = self.get_reference_points(
-            Y, X, Z, dim='3dCustom', bs=B, device=voxel_feature.device, dtype=voxel_feature.dtype)
+        if occ_pos is not None:
+            voxel_pos = occ_pos
+        # if self.use_vox_atten:
+        #     B, Y, X, Z, C = voxel_feature.shape
+        #     # mask_token =  self.mask_embed.weight.view(1,1,1,1,C).expand(B,Y,X,Z,C).to(voxel_feature.dtype)
+        #     # voxel_feature = torch.where(voxel_feature == 0, mask_token, voxel_feature)            
+        #     voxel_pos = self.positional_encoding(torch.zeros((B,Y,X,Z), device=voxel_feature.device).to(voxel_feature.dtype)).to(voxel_feature.dtype) # [B, dim, 100*8, 100]
+        #     # voxel_pos = voxel_pos.flatten(2).permute(0,2,1).reshape(B,Y,X,Z,C)
+        #     # voxel_feature += voxel_pos
+        #     ref_3d = self.get_reference_points(
+        #     Y, X, Z, dim='3dCustom', bs=B, device=voxel_feature.device, dtype=voxel_feature.dtype)
         
 
         if spatial_shapes is None:
@@ -744,9 +747,9 @@ class Sparse4DHead(BaseModule):
             
             
             elif op == "voxel_concat":
-                voxel_feature_occ = self.cat_block(torch.cat([voxel_feature.permute(0,4,1,2,3),pre_voxel_feature.permute(0,4,1,2,3)],dim=1))
+                voxel_feature_occ = self.cat_block(torch.cat([voxel_feature.permute(0,4,1,2,3),pre_voxel_feature.permute(0,4,1,2,3)],dim=1)) # B, H,W,D,C -> B, C, H, W, D 
                 if self.save_final_voxel_feature:
-                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().detach().permute(0,1,4,2,3)
+                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3)
                 if not self.use_mask_head and self.training:
                     up_voxel_feature = self.up_block(voxel_feature_occ) # B, C, H, W, D
                     voxel_occ = self.vox_occ_net(up_voxel_feature).permute(0,1,3,2,4) # B, C, W, H, D

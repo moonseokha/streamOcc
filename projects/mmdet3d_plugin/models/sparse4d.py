@@ -10,7 +10,7 @@ from mmcv.runner import force_fp32, auto_fp16
 from mmcv.cnn.bricks.conv_module import ConvModule
 from mmcv.utils import build_from_cfg
 from mmcv.cnn.bricks.registry import PLUGIN_LAYERS
-from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
+from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence,build_positional_encoding
 from mmdet.models import (
     DETECTORS,
     BaseDetector,
@@ -88,6 +88,7 @@ class Sparse4D(BaseDetector):
         use_DFA3D = False,
         num_frames = 2,
         cls_freq=None,
+        num_levels=4,
         occ_pred_weight = 0.5,
         det_pred_weight: float = None,
         inter_voxel_net: dict = None,
@@ -108,8 +109,13 @@ class Sparse4D(BaseDetector):
         FPN_with_pred:bool = False,
         with_prev:bool = False,
         save_high_res_feature:bool = False,
+        save_final_feature:bool = True,
+        multi_neck:dict = None,
         num_classes:int = 17,
         num_instanace_query:int = 100,
+        positional_encoding:dict = None,
+        twice_technic:bool = False,
+        
     ):
         super(Sparse4D, self).__init__(init_cfg=init_cfg)
         self.with_prev = with_prev
@@ -118,9 +124,11 @@ class Sparse4D(BaseDetector):
         self.multi_res = False
         self.num_instanace_query = num_instanace_query
         self.save_high_res_feature = save_high_res_feature
+        self.twice_technic = twice_technic
         self.FPN_with_pred = FPN_with_pred
         self.pred_occ = pred_occ
         self.occupy_threshold = occupy_threshold
+        self.save_final_feature = save_final_feature
         self.use_instance_mask = use_instance_mask
         self.num_frames = num_frames
         self.using_mask = using_mask
@@ -137,6 +145,8 @@ class Sparse4D(BaseDetector):
         self.prev_imgs = None
         self.use_multi_frame = use_multi_frame
         self.loss_occupancy_aux = loss_occupancy_aux
+        self.use_deformable_func = use_deformable_func
+        self.num_levels = num_levels
         # self.use_occ_focal_loss = use_occ_focal_loss
         self.prev_metas = None
         self.cached_vox_feature = None
@@ -144,6 +154,10 @@ class Sparse4D(BaseDetector):
             self.Vox_Convnet = build_from_cfg(Vox_Convnet, PLUGIN_LAYERS) 
         else:
             self.Vox_Convnet = None  
+        if multi_neck is not None:
+            self.multi_neck =  build_neck(multi_neck)
+        else:
+            self.multi_neck = None
         if pretrained is not None:
             backbone.pretrained = pretrained
         self.img_backbone = build_backbone(img_backbone)
@@ -204,7 +218,8 @@ class Sparse4D(BaseDetector):
             self.cams_embeds = nn.Parameter(torch.Tensor(num_cams, embed_dims))
             normal_(self.level_embeds)
             normal_(self.cams_embeds)
-       
+        self.positional_encoding = build_positional_encoding(positional_encoding) if positional_encoding is not None else None
+
         self.use_voxel_transformer = False
         if loss_dice is not None:
             self.loss_dice = build_from_cfg(loss_dice, LOSSES)
@@ -215,7 +230,6 @@ class Sparse4D(BaseDetector):
             self.head = build_head(head)
             if use_deformable_func:
                 assert DAF_VALID, "deformable_aggregation needs to be set up."
-            self.use_deformable_func = use_deformable_func
 
             self.use_voxel_encoder = False
             self.use_voxel_transformer = False
@@ -257,10 +271,15 @@ class Sparse4D(BaseDetector):
         else:
             self.mask_decoder_head = None
         
-    # @auto_fp16(apply_to=("img",), out_fp32=True)
+        
+        self.voxel_size = [int((grid_config['x'][1] - grid_config['x'][0])/grid_config['x'][2]),int((grid_config['y'][1] - grid_config['y'][0])/grid_config['y'][2]),int((grid_config['z'][1] - grid_config['z'][0])/grid_config['z'][2])]
+        
+    
+    @auto_fp16(apply_to=("img",), out_fp32=True)
     def extract_feat(self, img, return_depth=False, metas=None, prev=False):
         view_trans_metas = None
         bs = img.shape[0]
+
         feature_maps_det = None
         origin_feature_maps = None
         if img.dim() == 5:  # multi-view
@@ -272,24 +291,32 @@ class Sparse4D(BaseDetector):
             img = self.grid_mask(img)
         if "metas" in signature(self.img_backbone.forward).parameters:
             feature_maps = self.img_backbone(img, num_cams, metas=metas)
-            if self.img_backbone_det is not None:
-                feature_maps_det = self.img_backbone_det(img, num_cams, metas=metas)
+
         else:
             feature_maps = self.img_backbone(img)
-            if self.img_backbone_det is not None:
-                feature_maps_det = self.img_backbone_det(img)
-        if self.img_neck_det is not None:
-            if feature_maps_det is None:
-                feature_maps_det,_ = self.img_neck_det(feature_maps)
-            else:
-                feature_maps_det,_ = self.img_neck_det(feature_maps_det)
+  
         if self.img_neck is not None:
-            feature_maps = self.img_neck(feature_maps)
-        if type(feature_maps)==tuple:
-            feature_maps = [element for element in feature_maps]
-        for i, feat in enumerate(feature_maps):
-            feature_maps[i] = torch.reshape(feat, (bs, num_cams) + feat.shape[1:])
-        lift_feature = None
+            if self.multi_neck is not None:
+                lift_feature,inter_feature_maps = self.img_neck(feature_maps[-2:])
+                if inter_feature_maps is None:
+                    inter_feature_maps =  self.multi_neck(feature_maps)
+                else:
+                    inter_feature_maps = self.multi_neck(feature_maps[:self.num_levels-2],inter_feature_maps)
+                if type(inter_feature_maps)==tuple:
+                    inter_feature_maps = [element for element in inter_feature_maps]
+                inter_feature_maps = [torch.reshape(feat, (bs, num_cams) + feat.shape[1:]) for feat in inter_feature_maps]
+                if self.use_deformable_func:
+                    origin_feature_maps = [f.clone() for f in inter_feature_maps]
+                    inter_feature_maps = feature_maps_format(inter_feature_maps)
+            else:
+                lift_feature,_ = self.img_neck(feature_maps)
+                inter_feature_maps = None
+            
+       
+        feature_maps = lift_feature
+        feature_maps = [torch.reshape(feature_maps, (bs, num_cams) + feature_maps.shape[1:])]
+
+
         depths = None
         if return_depth and self.depth_branch is not None:
             depths = self.depth_branch(feature_maps, metas.get("focal"))
@@ -300,7 +327,7 @@ class Sparse4D(BaseDetector):
                 lift_feature = feature_maps[0].clone()
             if self.lift_start_num > 0:
                 lift_feature = lift_feature[self.lift_start_num:self.lift_start_num+len(self.downsample_list)]
-        origin_feature_maps = [f.clone() for f in feature_maps]
+
         if self.head is not None:
             if self.use_DFA3D:
                 return feature_maps, lift_feature, depths, feature_maps_det, view_trans_metas,origin_feature_maps
@@ -308,6 +335,11 @@ class Sparse4D(BaseDetector):
                 feature_maps = feature_maps_format(feature_maps)
                 if feature_maps_det is not None:
                     feature_maps_det = feature_maps_format(feature_maps_det)
+        if inter_feature_maps is not None:
+            # origin_feature_maps = [f.clone() for f in inter_feature_maps]
+            return inter_feature_maps, lift_feature, depths, feature_maps_det, view_trans_metas,origin_feature_maps
+        origin_feature_maps = feature_maps
+
         return feature_maps, lift_feature, depths, feature_maps_det, view_trans_metas,origin_feature_maps
 
     def encoder_bbox(self, box_target, device=None):
@@ -329,7 +361,7 @@ class Sparse4D(BaseDetector):
         return outputs
     
     @force_fp32(apply_to=("x","voxel_feat","lss_depth",))
-    def voxel_encoder(self, x, metas,img_feats=None,view_trans_metas=None,only_voxel=False,mlvl_feats=None,prev_voxel_list=None,key_view_tran_comp=None,**kwargs):
+    def voxel_encoder(self, x, metas,img_feats=None,view_trans_metas=None,only_voxel=False,mlvl_feats=None,prev_voxel_list=None,key_view_tran_comp=None,occ_pos=None,ref_3d=None,**kwargs):
         # Make 3D voxel feature 
         voxel_feats = []
         lss_depths = []
@@ -371,7 +403,7 @@ class Sparse4D(BaseDetector):
                 if type(voxel_feat) in [tuple, list]:
                     voxel_feat = voxel_feat[0]
             if self.inter_voxel_net is not None:
-                origin_voxel_feat = voxel_feat.clone()
+                # origin_voxel_feat = voxel_feat.clone()
                 voxel_feat = self.inter_voxel_net(voxel_feat)[0]
             # pdb.set_trace()
             
@@ -452,7 +484,7 @@ class Sparse4D(BaseDetector):
                                 self.prev_imgs[i] = self.prev_imgs[i].new_zeros(self.prev_imgs[i].shape)
                         else:
                             prev_vox_feat[i] = voxel_feat[i].clone().detach()
-            voxel_feat,occ_list,vox_occ_list = self.Vox_Convnet(voxel_feat,prev_vox_feat,metas,img_feats,mlvl_feats,**kwargs) # (B, C, Z, X, Y)
+            voxel_feat,occ_list,vox_occ_list = self.Vox_Convnet(voxel_feat,prev_vox_feat,metas,img_feats,mlvl_feats,occ_pos,ref_3d,self.twice_techinic,**kwargs) # (B, C, Z, X, Y)
 
 
         if self.FPN_with_pred is True:
@@ -476,9 +508,9 @@ class Sparse4D(BaseDetector):
                 voxel_feat = self.inter_voxel_net(voxel_feat)[0]
 
         if self.head is not None:
-            self.head.instance_bank.cached_vox_feature =voxel_feat.clone().detach() # B, C, D, H, W
+            self.head.instance_bank.cached_vox_feature =voxel_feat.clone()# B, C, D, H, W
         else:
-            self.cached_vox_feature = voxel_feat.clone().detach()
+            self.cached_vox_feature = voxel_feat.clone()
             self.prev_metas = metas
         voxel_feat = voxel_feat.permute(0,3,4,2,1).contiguous()  # (B, C, Z, Y, X) -> (B, Y, X, Z, C)  
 
@@ -584,7 +616,10 @@ class Sparse4D(BaseDetector):
     def forward_train(self, img, **data):
         voxel_feature=None
         prev_voxel_list = None
+        occ_pos = None
         matching_indices = None
+        
+        ###############For using multi-frame################
         if self.use_multi_frame:
             image_list = self.image_list.copy()
             meta_list = self.meta_list.copy()
@@ -606,12 +641,24 @@ class Sparse4D(BaseDetector):
                 prev_meta = meta_list[i-1].copy()
                 prev_voxel = self.extract_feat_prev(image,meta_data,prev_img,prev_meta,sensor2keyego,bda_aug_mat,bdakeyego2global).detach()
                 prev_voxel_list.append(prev_voxel)
+                
         feature_maps, lift_feature, depths,feature_maps_det,view_trans_metas,origin_feature_maps = self.extract_feat(img, True, data)
         occ_list = None
         vox_occ_list = None
         output = dict()
+        
+        if self.positional_encoding is not None:
+            W,H,D = self.voxel_size
+            B = img.shape[0]
+            occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
+            occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1)
+            
+            ref_3d = self.get_reference_points(
+            H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
+            
+            
         if self.use_voxel_feature:
-            voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ,origin_voxel_feat = self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list,mlvl_feats=origin_feature_maps,**data)
+            voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ,origin_voxel_feat = self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list,mlvl_feats=origin_feature_maps,occ_pos=occ_pos,ref_3d=ref_3d,**data)
         if self.use_DFA3D:
             feat_flatten, dpt_dist_flatten, spatial_shapes, level_start_index = self.pre_process_DFA3D(feature_maps, depths_voxel)
             feature_maps = feat_flatten
@@ -621,7 +668,7 @@ class Sparse4D(BaseDetector):
             if self.use_DFA3D:
                 model_outs,voxel_feature = self.head(feature_maps=feat_flatten, voxel_feature=voxel_feature, metas=data, occ_list=occ_list, depth = dpt_dist_flatten, spatial_shapes=spatial_shapes, level_start_index=level_start_index)
             else:
-                model_outs,voxel_feature = self.head(feature_maps=feature_maps, voxel_feature=voxel_feature, metas=data, occ_list=occ_list, depth = depths_voxel)
+                model_outs,voxel_feature = self.head(feature_maps=feature_maps, voxel_feature=voxel_feature, metas=data, occ_list=occ_list, depth = depths_voxel,occ_pos=occ_pos,ref_3d=ref_3d)
             # voxel_feature_occ.shape = (B, C, h, w, Z) 
             
             if "vox_occ" in model_outs:
@@ -658,6 +705,13 @@ class Sparse4D(BaseDetector):
                 assert 'gt_occ' in data, 'gt_occ is not in data'
                 output_occ = self.loss_surround_pred(data['gt_occ'],vox_occ_list,use_semantic=self.use_semantic,metas=data)
                 output.update(output_occ)
+                
+        if self.twice_technic == False:
+            if self.head is not None:
+                self.head.instance_bank.cached_vox_feature = self.head.instance_bank.cached_vox_feature.detach()
+            else:
+                self.cached_vox_feature = self.cached_vox_feature.detach()
+                
         return output
 
     def generate_mask(self, semantics):
@@ -789,17 +843,17 @@ class Sparse4D(BaseDetector):
         # pdb.set_trace()
         outs,compact_occ = self.mask_decoder_head(voxel_feats,voxel_feature_list=voxel_feature_list,mlvl_feats=mlvl_feats,threshold=self.occupy_threshold,instance_queries=instance_queries_list,origin_voxel_feat=origin_voxel_feat, **data)
         # pdb.set_trace()
-        if self.save_high_res_feature:
+        if self.save_final_feature:
             if self.head is not None:
-                if self.with_prev:
-                    self.head.instance_bank.cached_vox_feature = compact_occ.permute(0,1,4,3,2)  # b,c,w,h,z -> b,c,z,h,w
-                else:
-                    self.head.instance_bank.cached_vox_feature = compact_occ.new_zeros(compact_occ.shape).permute(0,1,4,3,2)
+                # if self.with_prev:
+                self.head.instance_bank.cached_vox_feature = compact_occ.permute(0,1,4,3,2)  # b,c,w,h,z -> b,c,z,h,w
+                # else:
+                    # self.head.instance_bank.cached_vox_feature = compact_occ.new_zeros(compact_occ.shape).permute(0,1,4,3,2)
             else:
-                if self.with_prev:
-                    self.cached_vox_feature = compact_occ.permute(0,1,4,3,2)  # b,c,w,h,z -> b,c,z,h,w
-                else:
-                    self.cached_vox_feature = compact_occ.new_zeros(compact_occ.shape).permute(0,1,4,3,2)
+                # if self.with_prev:
+                self.cached_vox_feature = compact_occ.permute(0,1,4,3,2)  # b,c,w,h,z -> b,c,z,h,w
+                # else:
+                    # self.cached_vox_feature = compact_occ.new_zeros(compact_occ.shape).permute(0,1,4,3,2)
         loss_inputs = [voxel_semantics, gt_classes, sem_mask,
                        mask_camera, mask_lidar, outs]
         losses = self.mask_decoder_head.loss(*loss_inputs)
@@ -819,6 +873,7 @@ class Sparse4D(BaseDetector):
         output = dict()
         prev_voxel_list = None
         instance_queries = None
+        occ_results = None
         if self.use_multi_frame:
             image_list = self.image_list.copy()
             meta_list = self.meta_list.copy()
@@ -840,8 +895,20 @@ class Sparse4D(BaseDetector):
                 prev_voxel_list.append(prev_voxel)
                 
         feature_maps, lift_feature, depths,feature_maps_det, view_trans_metas,origin_feature_maps = self.extract_feat(img, False, data)
+        if self.positional_encoding is not None:
+            W,H,D = self.voxel_size
+            B = img.shape[0]
+            occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
+            occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1)
+            
+            ref_3d = self.get_reference_points(
+            H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
+            # pdb.set_trace()
+            
         if self.use_voxel_feature:
-            voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ ,origin_voxel_feat= self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list)
+            voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ,origin_voxel_feat = self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list,mlvl_feats=origin_feature_maps,occ_pos=occ_pos,ref_3d=ref_3d,**data)
+            if self.head is None and self.mask_decoder_head is None:
+                occ_results = vox_occ_list[-1]
         if self.use_DFA3D:
             feat_flatten, dpt_dist_flatten, spatial_shapes, level_start_index = self.pre_process_DFA3D(feature_maps, depths_voxel)
         if self.head is not None:
@@ -849,11 +916,12 @@ class Sparse4D(BaseDetector):
             #     feature_maps = feature_maps_detach
             if feature_maps_det is not None:
                 feature_maps = feature_maps_det
-            model_outs,voxel_feature = self.head(feature_maps=feature_maps, voxel_feature=voxel_feature, metas=data,depth = depths_voxel)
-            if "vox_occ" in model_outs:
-                vox_occ_list+=model_outs["vox_occ"]
+            model_outs,voxel_feature = self.head(feature_maps=feature_maps, voxel_feature=voxel_feature, metas=data,depth = depths_voxel,occ_pos=occ_pos,ref_3d=ref_3d)
+            if self.mask_decoder_head is None:
+                if "vox_occ" in model_outs:
+                    occ_results=model_outs["vox_occ"][-1]
             results = self.head.post_process(model_outs)
-        occ_results = None
+        # occ_results = None
         
         if self.use_instance_mask:
             instance_mask = model_outs["classification"][-1].sigmoid().max(-1)[0] > 0.3
@@ -866,10 +934,10 @@ class Sparse4D(BaseDetector):
         
         if vox_occ_list != []:
             if self.dataset_name == 'surround':
-                _ ,occ_scores = torch.max(vox_occ_list[-1].softmax(dim=1),dim=1)
+                _ ,occ_scores = torch.max(vox_occ_list.softmax(dim=1),dim=1)
                 occ_results = self.evaluation_semantic(occ_scores, data['gt_occ'], vox_occ_list[-1].shape[1])
-            elif self.dataset_name == 'occ3d':
-                occ_results = vox_occ_list[-1]
+            # elif self.dataset_name == 'occ3d':
+            #     occ_results = vox_occ_list
         if occ_results is None:
             if results is not None:
                 output = [{"img_bbox": result} for result in results]
@@ -898,7 +966,7 @@ class Sparse4D(BaseDetector):
             #TODO imgfeats 설정
             outs,compact_occ = self.mask_decoder_head(voxel_feature,voxel_feature_list=voxel_feature_list,mlvl_feats=origin_feature_maps,threshold=self.occupy_threshold,instance_queries=instance_queries,origin_voxel_feat=origin_voxel_feat, **data)
             occ = self.mask_decoder_head.get_occ(outs)
-            if self.save_high_res_feature:
+            if self.save_final_feature:
                 if self.head is not None:
                     self.head.instance_bank.cached_vox_feature = compact_occ.permute(0,1,4,3,2)
                 else:
@@ -1086,7 +1154,61 @@ class Sparse4D(BaseDetector):
 
                     
         return loss_dict
-    
+    @staticmethod
+    def get_reference_points(H, W, Z=8, num_points_in_pillar=4, dim='3d', bs=1, device='cuda', dtype=torch.float):
+        """Get the reference points used in DCA and DSA.
+        Args:
+            H, W: spatial shape of bev.
+            Z: hight of pillar.
+            D: sample D points uniformly from each pillar.
+            device (obj:`device`): The device where
+                reference_points should be.
+        Returns:
+            Tensor: reference points used in decoder, has \
+                shape (bs, num_keys, num_levels, 2).
+        """
+
+        # reference points in 3D space, used in spatial cross-attention (SCA)
+        if dim == '3d':
+            zs = torch.linspace(0.5, Z - 0.5, num_points_in_pillar, dtype=dtype,
+                                device=device).view(-1, 1, 1).expand(num_points_in_pillar, H, W) / Z
+            xs = torch.linspace(0.5, W - 0.5, W, dtype=dtype,
+                                device=device).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
+            ys = torch.linspace(0.5, H - 0.5, H, dtype=dtype,
+                                device=device).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
+            ref_3d = torch.stack((xs, ys, zs), -1)
+            ref_3d = ref_3d.permute(0, 3, 1, 2).flatten(2).permute(0, 2, 1)
+            ref_3d = ref_3d[None].repeat(bs, 1, 1, 1)
+            return ref_3d
+
+        # reference points on 2D bev plane, used in temporal self-attention (TSA).
+        elif dim == '2d':
+            ref_y, ref_x = torch.meshgrid(
+                torch.linspace(
+                    0.5, H - 0.5, H, dtype=dtype, device=device),
+                torch.linspace(
+                    0.5, W - 0.5, W, dtype=dtype, device=device)
+            )
+            ref_y = ref_y.reshape(-1)[None] / H
+            ref_x = ref_x.reshape(-1)[None] / W
+            ref_2d = torch.stack((ref_x, ref_y), -1)
+            ref_2d = ref_2d.repeat(bs, 1, 1).unsqueeze(2)
+            return ref_2d
+        elif dim == '3dCustom':
+            ref_y, ref_x, ref_z = torch.meshgrid(
+                torch.linspace(
+                    0.5, H - 0.5, H, dtype=dtype, device=device),
+                torch.linspace(
+                    0.5, W - 0.5, W, dtype=dtype, device=device),
+                torch.linspace(
+                    0.5, Z - 0.5, Z, dtype=dtype, device=device)
+            )
+            ref_y = ref_y.reshape(-1)[None] / H
+            ref_x = ref_x.reshape(-1)[None] / W
+            ref_z = ref_z.reshape(-1)[None] / Z
+            ref_2d = torch.stack((ref_x, ref_y, ref_z), -1)
+            ref_2d = ref_2d.repeat(bs, 1, 1).unsqueeze(2)
+            return ref_2d 
     
     
     
@@ -1096,15 +1218,10 @@ class Sparse4D(BaseDetector):
 class Sparse4D_BEVDepth(Sparse4D):
 
     def __init__(self,
-                 multi_neck: dict = None,
                  with_prev=True,
                  use_multi_fpn=True,
                  **kwargs):
         super(Sparse4D_BEVDepth, self).__init__(**kwargs)
-        if multi_neck is not None:
-            self.multi_neck =  build_neck(multi_neck)
-        else:
-            self.multi_neck = None
         self.use_multi_fpn = use_multi_fpn
         self.with_prev = with_prev,
         self.extra_ref_frames = 1
@@ -1199,9 +1316,9 @@ class Sparse4D_BEVDepth(Sparse4D):
                 
         prev_input = prev_metas['view_tran_comp']
         curr_input = metas['view_tran_comp']
-        prev_ego2global = torch.tensor([meta['T_global'] for meta in prev_metas['img_metas']], device=img.device)
-        curr_ego2global = torch.tensor([meta['T_global'] for meta in metas['img_metas']], device=img.device)
 
+        prev_ego2global = torch.tensor(np.array([meta['T_global'] for meta in prev_metas['img_metas']]), device=img.device)
+        curr_ego2global = torch.tensor(np.array([meta['T_global'] for meta in metas['img_metas']]), device=img.device)
         sensor2egos_curr = curr_input[0].double()
         ego2globals_curr = curr_ego2global[:,None, ...].double()
         bda_curr = curr_input[-1].double()
@@ -1260,8 +1377,9 @@ class Sparse4D_BEVDepth(Sparse4D):
                 feature_maps = self.img_neck(feature_maps)
             if type(feature_maps)==tuple:
                 feature_maps = [element for element in feature_maps]
-            for i, feat in enumerate(feature_maps):
-                feature_maps[i] = torch.reshape(feat, (bs, num_cams) + feat.shape[1:])
+            # for i, feat in enumerate(feature_maps):
+            #     feature_maps[i] = torch.reshape(feat, (bs, num_cams) + feat.shape[1:])
+            feature_maps = [torch.reshape(feat, (bs, num_cams) + feat.shape[1:]) for feat in feature_maps]
 
             if return_depth and self.depth_branch is not None:
                 depths = self.depth_branch(feature_maps, metas.get("focal"))
@@ -1274,7 +1392,8 @@ class Sparse4D_BEVDepth(Sparse4D):
                     lift_feature = lift_feature[self.lift_start_num:self.lift_start_num+len(self.downsample_list)]
             if prev_img is None:
                 self.prev_imgs = img.clone().detach()
-            origin_feature_maps = [f.clone() for f in feature_maps]
+            # origin_feature_maps = [f.clone() for f in feature_maps]
+            origin_feature_maps=feature_maps
             if self.head is not None:
                 if self.use_DFA3D:
                     return feature_maps, lift_feature, depths, feature_maps_det, view_trans_metas,origin_feature_maps

@@ -10,7 +10,7 @@ log_level = "INFO"
 work_dir = None
 
 
-total_batch_size = 8
+total_batch_size = 4
 num_gpus = 2
 batch_size = total_batch_size // num_gpus
 num_iters_per_epoch = int(28130 // (num_gpus * batch_size))
@@ -932,15 +932,15 @@ evaluation = dict(
 )
 
 
-custom_hooks = [
-    dict(
-        type='MEGVIIEMAHook',
-        init_updates=10560,
-        priority='NORMAL',
-        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-    ),
-    dict(
-        type='SyncbnControlHook',
-        syncbn_start_iter=0,
-    ),
-]
+# custom_hooks = [
+#     dict(
+#         type='MEGVIIEMAHook',
+#         init_updates=10560,
+#         priority='NORMAL',
+#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+#     ),
+#     dict(
+#         type='SyncbnControlHook',
+#         syncbn_start_iter=0,
+#     ),
+# ]

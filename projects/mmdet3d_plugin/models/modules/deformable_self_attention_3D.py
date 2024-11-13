@@ -209,7 +209,7 @@ class DeformSelfAttention3D(BaseModule):
         if identity is None:
             identity = query
         if query_pos is not None:
-            query = query + query_pos.flatten(2).permute(0,2,1)
+            query = query + query_pos
         if not self.batch_first:
 
             query = query.permute(1, 0, 2)
