@@ -32,7 +32,7 @@ class Vox_Convnet(nn.Module):
                  embed_dims: int,
                  conv_cfg: dict,
                  fin_conv_cfg: dict = None,
-                 top_k_ratio = 0.2,
+                 top_k_ratio = 0.1,
                  use_temporal: bool = False,
                  use_occ_loss: bool = False,
                  img_to_voxel: bool = False,
@@ -259,7 +259,7 @@ class Vox_Convnet(nn.Module):
                 mlvl_feats=None,
                 occ_pos = None,
                 ref_3d = None,
-                twice_techinic = False,
+                twice_technic = False,
                 **kwargs,
                 ) -> torch.Tensor:
         B,C,D,H,W = voxel_feat.shape
@@ -288,22 +288,43 @@ class Vox_Convnet(nn.Module):
                     temp_occ = self.occ_net[i](query)
                     if self.use_occ_loss:
                         occ_list.append(temp_occ)
+
+                        
+                        
                     if self.img_to_voxel:
+                        
+                        # occupancy_scores 계산 및 상위 k개 인덱스 선택
                         occupancy_scores = temp_occ.sigmoid()
-                        occupied_indices = occupancy_scores.topk(int(self.top_k_ratio*occupancy_scores.shape[1]),dim=1)[1]
-                        vox_indices = []
-                        vox_pos_embedding = []
-                        for b in range(bs):
-                            vox_indices.append(torch.index_select(ref_3d[b].clone(),0,occupied_indices[b].squeeze(1)).unsqueeze(0).squeeze(2))
-                            vox_pos_embedding.append(torch.index_select(occ_pos[b],0,occupied_indices[b].squeeze(1)).unsqueeze(0)) 
-                        vox_indices = torch.cat(vox_indices,dim=0) # [b,n,3]
-                        vox_pos_embedding = torch.cat(vox_pos_embedding,dim=0)
+                        num_topk = int(self.top_k_ratio * occupancy_scores.shape[1])
+                        occupied_scores, occupied_indices = occupancy_scores.topk(num_topk, dim=1)
+
+                        # occupied_indices를 이용해 배치별 인덱스 선택
+                        batch_indices = occupied_indices + (torch.arange(bs, device=occupied_indices.device).view(-1, 1) * ref_3d.shape[1])[:,None,:]
+                        vox_indices = ref_3d.view(-1, ref_3d.shape[-1]).index_select(0, batch_indices.flatten()).view(bs, num_topk, -1)
+
+                        # occ_pos에서 상위 k개 인덱스를 선택해 배치별 위치 임베딩 계산
+                        vox_pos_embedding = occ_pos.reshape(-1, occ_pos.shape[-1]).index_select(0, batch_indices.flatten()).view(bs, num_topk, -1)
+
+                        # occupied_query 계산
+                        occupied_query = torch.gather(query, 1, occupied_indices.repeat(1, 1, query.shape[2]))
+                        
+                        
+                        # occupancy_scores = temp_occ.sigmoid()
+                        # occupied_indices = occupancy_scores.topk(int(self.top_k_ratio*occupancy_scores.shape[1]),dim=1)[1]
+                        # vox_indices = []
+                        # vox_pos_embedding = []
+                        # for b in range(bs):
+                        #     vox_indices.append(torch.index_select(ref_3d[b].clone(),0,occupied_indices[b].squeeze(1)).unsqueeze(0).squeeze(2))
+                        #     vox_pos_embedding.append(torch.index_select(occ_pos[b],0,occupied_indices[b].squeeze(1)).unsqueeze(0)) 
+                        # pdb.set_trace()
+                        # vox_indices = torch.cat(vox_indices,dim=0) # [b,n,3]
+                        # vox_pos_embedding = torch.cat(vox_pos_embedding,dim=0)
                         # vox_z = occupied_indices % self.grid_size[2]
                         # vox_y = (occupied_indices // self.grid_size[2]) % self.grid_size[1]
                         # vox_x = (occupied_indices // self.grid_size[2] // self.grid_size[1])
                         # vox_pos = torch.stack([vox_x,vox_y,vox_z],dim=2).squeeze() #[bs, num_points, 3]
                         
-                        occupied_query = torch.gather(query,1,occupied_indices.repeat(1,1,query.shape[2]))
+                        # occupied_query = torch.gather(query,1,occupied_indices.repeat(1,1,query.shape[2]))
                         sampling_offsets = self.sampling_offsets[i](occupied_query)
                         sampling_offsets = (sampling_offsets.view(
                             bs, -1, self.num_points, 3).sigmoid()-0.5)*self.interaction_range
@@ -373,8 +394,8 @@ class Vox_Convnet(nn.Module):
                     else:
                         vox_occ = self.pred_occ_net(query)
                     vox_occ_list.append(vox_occ.permute(0,1,4,3,2))
-                if twice_techinic:
-                    query = query.detach()
+                # if twice_technic:
+                #     query = query.detach()
             if self.FPN_with_pred is not True:
                 if self.temp_cat_method == 'cat':
                     query = self.cat_block(torch.cat([query,voxel_feat],dim=1))

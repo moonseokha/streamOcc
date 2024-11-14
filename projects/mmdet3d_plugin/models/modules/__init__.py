@@ -35,7 +35,7 @@ from .cross_encoder_3D import Cross_VoxFormerEncoder3D, Cross_VoxFormerLayer3D
 from .transformer_3D import PerceptionTransformer3D
 from .fpn import CustomFPN,BiFPN,MultiFPN
 from .resnet import CustomResNet,CustomResNet3D
-from .lss_fpn import LSSFPN3D,LSSFPN3D_COTR,FPN_LSS
+from .lss_fpn import LSSFPN3D,LSSFPN3D_COTR,FPN_LSS,LSSFPN3D_small
 from .deformable_self_attention_3D import DeformSelfAttention3D
 from .predictor import Predictor
 from .Unet import Unet_DAP

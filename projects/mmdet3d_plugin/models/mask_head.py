@@ -106,6 +106,8 @@ class MaskHead(BaseModule):
         if transformer is not None:
             self.transformer = build_transformer(transformer)
             self.positional_encoding = build_positional_encoding(positional_encoding) if positional_encoding is not None else None
+            self.enhance_projs = Conv3d(embed_dims, embed_dims, kernel_size=1)
+
         else:
             self.transformer = None
             self.positional_encoding = None
@@ -142,7 +144,6 @@ class MaskHead(BaseModule):
                             bias=True,
                             conv_cfg=dict(type='Conv3d'))
         else:
-            # self.enhance_projs = Conv3d(embed_dims, embed_dims, kernel_size=1)
             self.up1 = nn.Sequential(
                 # nn.ConvTranspose3d(embed_dims,embed_dims//2,(3,3,3),padding=(1,1,1)),
                 # nn.BatchNorm3d(embed_dims//2),
@@ -176,9 +177,9 @@ class MaskHead(BaseModule):
             self.occ_predictor_2 =nn.Linear(in_channels, num_classes+1)
         else:
             self.occ_predictor_1 = nn.Sequential(
-                        nn.Linear(embed_dims, in_channels),
+                        nn.Linear(embed_dims, in_channels//2),
                         nn.Softplus())
-            self.occ_predictor_2 =nn.Linear(in_channels, num_classes+1)
+            self.occ_predictor_2 =nn.Linear(in_channels//2, num_classes+1)
 
     def init_weights(self):
         """Initialize weights of the DeformDETR head."""
@@ -194,7 +195,7 @@ class MaskHead(BaseModule):
                 nn.init.xavier_normal_(p)
         xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
-    # @auto_fp16(apply_to=('mlvl_feats'))
+    @auto_fp16(apply_to=('mlvl_feats'))
     def forward(self, occ_feature, voxel_feature_list=None,mlvl_feats=None,threshold=0.3,instance_queries=None,origin_voxel_feat=None, **kwargs):
         """Forward function.
         Args:
@@ -238,7 +239,11 @@ class MaskHead(BaseModule):
                 enhanced_occ_feature = enhanced_occ_feature.permute(0, 2, 1).view(bs, -1, occ_h, occ_w, occ_z)
                 compact_occ = self.enhance_projs(enhanced_occ_feature).permute(0,1,4,2,3)   # [b, c, h, w, z] -> [b, c, z, h, w]
             else:
-                compact_occ = occ_feature.permute(0, 1, 4, 2, 3) #[b, c, h, w, z] -> [b, c', z, h, w]
+                if self.use_COTR_version:
+                    compact_occ = self.enhance_projs(occ_feature.permute(0, 1, 4, 3, 2))
+                else:
+                    compact_occ = occ_feature.permute(0, 1, 4, 2, 3) #[b, c, h, w, z] -> [b, c', z, h, w]
+
                 # compact_occ = self.enhance_projs(occ_feature.permute(0, 1, 4, 2, 3)) # [b, c, h, w, z] -> [b, c', z, h, w]
 
         if self.use_COTR_version is False:
@@ -260,6 +265,8 @@ class MaskHead(BaseModule):
         
         # with only encoder, we can speed up inference 
         # and have a coarse occ results
+        compact_occ = compact_occ.permute(0, 1, 4, 3, 2) #bczhw -> bcwhz
+
         if self.training or not self.test_cfg.only_encoder:
             # -----------------Decoder---------------------
             object_query_embeds = self.query_embedding.weight.to(dtype)
@@ -275,7 +282,6 @@ class MaskHead(BaseModule):
             # [bs, n, c] --> [n, bs, c]
             object_query = object_query.permute(1, 0, 2)
             object_query_pos = object_query_pos.permute(1, 0, 2)
-            compact_occ = compact_occ.permute(0, 1, 4, 3, 2) #bczhw -> bcwhz
             # compact_occ = self.compact_proj(compact_occ)
             w, h, z = compact_occ.shape[-3:]
             # [bs, c, w, h, z] --> [w*h*z, bs, c]
@@ -732,10 +738,10 @@ class MaskHead(BaseModule):
         """
         occ_dict = {}
         occ_outs = preds_dicts['occ_outs']
-        occ_outs = occ_outs.softmax(-1)
+        # occ_outs = occ_outs.softmax(-1)
         occ_outs = occ_outs.argmax(-1)
         if self.test_cfg.only_encoder:
-            occ_dict['occ'] = occ_outs.squeeze(dim=0).cpu().numpy().astype(np.uint8)
+            occ_dict['occ'] = occ_outs.squeeze(dim=0)
             return occ_dict
         mask_cls_results = preds_dicts['maskocc_outs']['cls_preds'][0][-1] #[bs, N, num_class]
         mask_pred_results = preds_dicts['maskocc_outs']['mask_preds'][-1] #[bs, N, W, H, Z]

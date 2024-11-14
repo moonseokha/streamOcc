@@ -404,7 +404,7 @@ class Sparse4D(BaseDetector):
                     voxel_feat = voxel_feat[0]
             if self.inter_voxel_net is not None:
                 # origin_voxel_feat = voxel_feat.clone()
-                voxel_feat = self.inter_voxel_net(voxel_feat)[0]
+                voxel_feat = self.inter_voxel_net(voxel_feat,checksize=True)[0]
             # pdb.set_trace()
             
         if self.head is not None:
@@ -484,7 +484,7 @@ class Sparse4D(BaseDetector):
                                 self.prev_imgs[i] = self.prev_imgs[i].new_zeros(self.prev_imgs[i].shape)
                         else:
                             prev_vox_feat[i] = voxel_feat[i].clone().detach()
-            voxel_feat,occ_list,vox_occ_list = self.Vox_Convnet(voxel_feat,prev_vox_feat,metas,img_feats,mlvl_feats,occ_pos,ref_3d,self.twice_techinic,**kwargs) # (B, C, Z, X, Y)
+            voxel_feat,occ_list,vox_occ_list = self.Vox_Convnet(voxel_feat,prev_vox_feat,metas,img_feats,mlvl_feats,occ_pos,ref_3d,self.twice_technic,**kwargs) # (B, C, Z, X, Y)
 
 
         if self.FPN_with_pred is True:
@@ -618,6 +618,7 @@ class Sparse4D(BaseDetector):
         prev_voxel_list = None
         occ_pos = None
         matching_indices = None
+        model_outs = None
         
         ###############For using multi-frame################
         if self.use_multi_frame:
@@ -647,15 +648,15 @@ class Sparse4D(BaseDetector):
         vox_occ_list = None
         output = dict()
         
-        if self.positional_encoding is not None:
-            W,H,D = self.voxel_size
-            B = img.shape[0]
-            occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
-            occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1)
-            
-            ref_3d = self.get_reference_points(
-            H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
-            
+       
+        W,H,D = self.voxel_size
+        B = img.shape[0]
+        occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
+        occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1)  if self.positional_encoding is not None else None
+        
+        ref_3d = self.get_reference_points(
+        H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
+        
             
         if self.use_voxel_feature:
             voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ,origin_voxel_feat = self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list,mlvl_feats=origin_feature_maps,occ_pos=occ_pos,ref_3d=ref_3d,**data)
@@ -691,7 +692,11 @@ class Sparse4D(BaseDetector):
                 output["loss_dense_depth"] = sum(self.img_view_transformer[i].get_depth_loss(data["gt_depth"], depths_voxel[i]) for i in range(len(self.img_view_transformer))) / len(self.img_view_transformer)
 
         if self.mask_decoder_head is not None:
-            loss_occ,mask_head_occ = self.forward_mask_decoder_train(voxel_feature, voxel_feature_list, origin_feature_maps, data, model_outs["instance_feature"],origin_voxel_feat=origin_voxel_feat,matching_indices=matching_indices)
+            if model_outs is not None:
+                instance_feature = model_outs["instance_feature"]
+            else:
+                instance_feature = None
+            loss_occ,mask_head_occ = self.forward_mask_decoder_train(voxel_feature, voxel_feature_list, origin_feature_maps, data,instance_feature ,origin_voxel_feat=origin_voxel_feat,matching_indices=matching_indices)
             output.update(loss_occ)
             if vox_occ_list is None:
                 vox_occ_list = [mask_head_occ.permute(0,4,1,2,3)]
@@ -895,14 +900,14 @@ class Sparse4D(BaseDetector):
                 prev_voxel_list.append(prev_voxel)
                 
         feature_maps, lift_feature, depths,feature_maps_det, view_trans_metas,origin_feature_maps = self.extract_feat(img, False, data)
-        if self.positional_encoding is not None:
-            W,H,D = self.voxel_size
-            B = img.shape[0]
-            occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
-            occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1)
+        # if self.positional_encoding is not None:
+        W,H,D = self.voxel_size
+        B = img.shape[0]
+        occ_mask = torch.zeros((B, H, W, D),device=img.device).to(img.dtype)
+        occ_pos = self.positional_encoding(occ_mask, 1).flatten(2).to(img.dtype).permute(0,2,1) if self.positional_encoding is not None else None
             
-            ref_3d = self.get_reference_points(
-            H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
+        ref_3d = self.get_reference_points(
+        H, W, D, dim='3dCustom', bs=B, device=img.device, dtype=img.dtype) # (B,X,Y,Z,3) -> (B,X*Y*Z,1,3)  H,W,D 형식의 input에 맞음
             # pdb.set_trace()
             
         if self.use_voxel_feature:

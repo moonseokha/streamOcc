@@ -6,6 +6,8 @@ from torch import nn
 from mmcv.cnn.bricks.conv_module import ConvModule
 from mmdet.models import BACKBONES
 from mmdet.models.backbones.resnet import BasicBlock, Bottleneck
+import torch.nn.functional as F
+import pdb
 
 
 @BACKBONES.register_module()
@@ -198,10 +200,12 @@ class CustomResNet3D(nn.Module):
             kernel_size=3,
             padding=1,
             with_cp=False,
+            size = None,
     ):
         super(CustomResNet3D, self).__init__()
         # build backbone
         assert len(num_layer) == len(stride)
+        self.size = size
         num_channels = [numC_input*2**(i+1) for i in range(len(num_layer))] \
             if num_channels is None else num_channels
         self.backbone_output_ids = range(len(num_layer)) \
@@ -235,8 +239,12 @@ class CustomResNet3D(nn.Module):
 
         self.with_cp = with_cp
 
-    def forward(self, x):
+    def forward(self, x, checksize=False):
         feats = []
+        b, c, w, h, z = x.shape
+        if checksize and self.size is not None:
+            if self.size[1] != h or self.size[2] != w:
+                x = F.interpolate(x, size=self.size, mode='trilinear', align_corners=True)
         x_tmp = x
         for lid, layer in enumerate(self.layers):
             if self.with_cp:
