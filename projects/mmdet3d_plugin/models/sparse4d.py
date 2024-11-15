@@ -360,7 +360,7 @@ class Sparse4D(BaseDetector):
             outputs.append(output)
         return outputs
     
-    @force_fp32(apply_to=("x","voxel_feat","lss_depth",))
+    @force_fp32(apply_to=("x","voxel_feat","lss_depth","prev_vox_feat"))
     def voxel_encoder(self, x, metas,img_feats=None,view_trans_metas=None,only_voxel=False,mlvl_feats=None,prev_voxel_list=None,key_view_tran_comp=None,occ_pos=None,ref_3d=None,**kwargs):
         # Make 3D voxel feature 
         voxel_feats = []
@@ -434,7 +434,6 @@ class Sparse4D(BaseDetector):
         if self.FPN_with_pred:
             curr_voxel_feat = voxel_feat.clone()
 
-
         if self.Vox_Convnet is not None:
             if prev_vox_feat is not None:
                 grid_size = prev_vox_feat.shape[2:]
@@ -506,7 +505,6 @@ class Sparse4D(BaseDetector):
             if self.inter_voxel_net is not None:
                 origin_voxel_feat = voxel_feat.clone()
                 voxel_feat = self.inter_voxel_net(voxel_feat)[0]
-
         if self.head is not None:
             self.head.instance_bank.cached_vox_feature =voxel_feat.clone()# B, C, D, H, W
         else:
@@ -710,7 +708,6 @@ class Sparse4D(BaseDetector):
                 assert 'gt_occ' in data, 'gt_occ is not in data'
                 output_occ = self.loss_surround_pred(data['gt_occ'],vox_occ_list,use_semantic=self.use_semantic,metas=data)
                 output.update(output_occ)
-                
         if self.twice_technic == False:
             if self.head is not None:
                 self.head.instance_bank.cached_vox_feature = self.head.instance_bank.cached_vox_feature.detach()
@@ -847,7 +844,6 @@ class Sparse4D(BaseDetector):
             sem_mask.append(gt_instance_sem_masks)
         # pdb.set_trace()
         outs,compact_occ = self.mask_decoder_head(voxel_feats,voxel_feature_list=voxel_feature_list,mlvl_feats=mlvl_feats,threshold=self.occupy_threshold,instance_queries=instance_queries_list,origin_voxel_feat=origin_voxel_feat, **data)
-        # pdb.set_trace()
         if self.save_final_feature:
             if self.head is not None:
                 # if self.with_prev:

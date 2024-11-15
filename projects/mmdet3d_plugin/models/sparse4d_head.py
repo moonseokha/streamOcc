@@ -749,7 +749,7 @@ class Sparse4DHead(BaseModule):
             elif op == "voxel_concat":
                 voxel_feature_occ = self.cat_block(torch.cat([voxel_feature.permute(0,4,1,2,3),pre_voxel_feature.permute(0,4,1,2,3)],dim=1)) # B, H,W,D,C -> B, C, H, W, D 
                 if self.save_final_voxel_feature:
-                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3)
+                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3) # B, C, D, H, W
                 if not self.use_mask_head and self.training:
                     up_voxel_feature = self.up_block(voxel_feature_occ) # B, C, H, W, D
                     voxel_occ = self.vox_occ_net(up_voxel_feature).permute(0,1,3,2,4) # B, C, W, H, D
@@ -1004,8 +1004,9 @@ class Sparse4DHead(BaseModule):
         output["instance_id"] = instance_id
         self.prediction_length = 0
         if voxel_feature_occ == None:
-            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3)
+            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3) # B, C, H, W, D
         output['instance_feature'] = instance_feature
+        self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3) # B, C, D, H, W
         return output , voxel_feature_occ
     
 

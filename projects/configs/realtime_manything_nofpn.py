@@ -125,13 +125,13 @@ use_mask_token = False
 use_semantic = True  
 pred_occ = True
 use_occ_loss = False
-img_to_voxel = False
+img_to_voxel = True
 use_temporal=True
 up_sample = True
 # use_occ_focal_loss = True
 num_without_img = 1
 temp_cat_method = 'cat'
-temporal_layers = 0
+temporal_layers = 1
 current_layers = 0
 down_ratio = 8
 downsample_list = [16]
@@ -162,13 +162,13 @@ model = dict(
     downsample_list = downsample_list,
     occ_pred_weight=occ_pred_weight,
     occ_seqeunce = occ_seqeunce,
-    # positional_encoding=dict(
-    #     type='CustomLearnedPositionalEncoding3D',
-    #     num_feats=_pos_dim_,
-    #     row_num_embed=100,
-    #     col_num_embed=100,
-    #     tub_num_embed=8
-    # ),
+    positional_encoding=dict(
+        type='CustomLearnedPositionalEncoding3D',
+        num_feats=_pos_dim_,
+        row_num_embed=100,
+        col_num_embed=100,
+        tub_num_embed=8
+    ),
     img_backbone=dict(
         type='ResNet',
         depth=50,
@@ -232,27 +232,27 @@ model = dict(
     #                       bias=5.),
     #     downsample=16
     # ),
-    voxel_encoder_backbone=dict(
-        type='CustomResNet3D',
-        numC_input=numC_Trans,
-        num_layer=[1, 2, 2],
-        with_cp=False,
-        num_channels=[numC_Trans,numC_Trans*2,numC_Trans*2],
-        stride=[1,2,2],
-        backbone_output_ids=[0,1,2]),
-    voxel_encoder_neck=dict(type='LSSFPN3D_small',
-                              in_channels=numC_Trans*5,
-                              out_channels=embed_dims,
-                              size=(8,100,100)),
-    # inter_voxel_net=dict(
+    # voxel_encoder_backbone=dict(
     #     type='CustomResNet3D',
     #     numC_input=numC_Trans,
+    #     num_layer=[1, 2, 2],
     #     with_cp=False,
-    #     num_layer=[1,],
-    #     num_channels=[embed_dims,],
-    #     stride=[2,],
-    #     backbone_output_ids=[0,]
-    # ),
+    #     num_channels=[numC_Trans,numC_Trans*2,numC_Trans*2],
+    #     stride=[1,2,2],
+    #     backbone_output_ids=[0,1,2]),
+    # voxel_encoder_neck=dict(type='LSSFPN3D_small',
+    #                           in_channels=numC_Trans*5,
+    #                           out_channels=embed_dims,
+    #                           size=(8,100,100)),
+    inter_voxel_net=dict(
+        type='CustomResNet3D',
+        numC_input=numC_Trans,
+        with_cp=False,
+        num_layer=[1,],
+        num_channels=[embed_dims,],
+        stride=[2,],
+        backbone_output_ids=[0,]
+    ),
     Vox_Convnet=dict(
         type='Vox_Convnet',
         embed_dims=embed_dims,
@@ -284,7 +284,7 @@ model = dict(
         use_occ_loss=use_occ_loss,
         img_to_voxel= img_to_voxel,
         grid_config=grid_config,
-        pred_occ =False,
+        pred_occ = pred_occ,
         use_mask_token = use_mask_token,
     ),
     cls_freq=nusc_class_frequencies,
@@ -293,11 +293,11 @@ model = dict(
         use_sigmoid=False,
         loss_weight=10.0
     ),
-    loss_occupancy_aux = dict(
-        type = 'Lovasz3DLoss',
-        ignore = 17,
-        loss_weight=1.0
-    ),
+    # loss_occupancy_aux = dict(
+    #     type = 'Lovasz3DLoss',
+    #     ignore = 17,
+    #     loss_weight=1.0
+    # ),
     head=dict(
         type="Sparse4DHead",
         cls_threshold_to_reg=0.05,
@@ -323,7 +323,7 @@ model = dict(
             type="InstanceBank",
             num_anchor=900,
             embed_dims=embed_dims,
-            anchor="_nuscenes_kmeans900.npy",
+            anchor="nuscenes_kmeans900.npy",
             anchor_handler=dict(type="SparseBox3DKeyPointsGenerator"),
             num_temp_instances=600 if temporal else -1,
             confidence_decay=0.6,
@@ -940,8 +940,8 @@ custom_hooks = [
         priority='NORMAL',
         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
     ),
-    dict(
-        type='SyncbnControlHook',
-        syncbn_start_iter=0,
-    ),
+    # dict(
+    #     type='SyncbnControlHook',
+    #     syncbn_start_iter=0,
+    # ),
 ]

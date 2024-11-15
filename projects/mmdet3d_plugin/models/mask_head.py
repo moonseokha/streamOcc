@@ -195,7 +195,7 @@ class MaskHead(BaseModule):
                 nn.init.xavier_normal_(p)
         xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
-    @auto_fp16(apply_to=('mlvl_feats'))
+    # @auto_fp16(apply_to=('mlvl_feats'), out_fp32=True)
     def forward(self, occ_feature, voxel_feature_list=None,mlvl_feats=None,threshold=0.3,instance_queries=None,origin_voxel_feat=None, **kwargs):
         """Forward function.
         Args:

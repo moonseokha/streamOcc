@@ -48,7 +48,6 @@ class LSSFPN3D(nn.Module):
 @NECKS.register_module()
 class LSSFPN3D_small(nn.Module):
     def __init__(self,
-                 
                  in_channels,
                  out_channels,
                  input_layers=3,
