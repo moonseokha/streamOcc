@@ -923,7 +923,6 @@ class Sparse4D(BaseDetector):
                     occ_results=model_outs["vox_occ"][-1]
             results = self.head.post_process(model_outs)
         # occ_results = None
-        
         if self.use_instance_mask:
             instance_mask = model_outs["classification"][-1].sigmoid().max(-1)[0] > 0.3
             instance_queries = model_outs["instance_feature"][instance_mask]

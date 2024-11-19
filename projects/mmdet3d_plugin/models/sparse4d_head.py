@@ -713,8 +713,8 @@ class Sparse4DHead(BaseModule):
                     # instance_feature[:,:num_free_instance].clone().detach(),
                     query_feature,
                     voxel_feature.clone(),
-                    query_anchor_embed,
-                    anchor_embed[:,:num_free_instance], 
+                    anchor[:,:num_free_instance],
+                    query_anchor_embed, 
                     cls_index,
                     metas= metas,
                     img_feats= feature_maps,
@@ -749,7 +749,7 @@ class Sparse4DHead(BaseModule):
             elif op == "voxel_concat":
                 voxel_feature_occ = self.cat_block(torch.cat([voxel_feature.permute(0,4,1,2,3),pre_voxel_feature.permute(0,4,1,2,3)],dim=1)) # B, H,W,D,C -> B, C, H, W, D 
                 if self.save_final_voxel_feature:
-                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3) # B, C, D, H, W
+                    self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3)
                 if not self.use_mask_head and self.training:
                     up_voxel_feature = self.up_block(voxel_feature_occ) # B, C, H, W, D
                     voxel_occ = self.vox_occ_net(up_voxel_feature).permute(0,1,3,2,4) # B, C, W, H, D
@@ -775,21 +775,21 @@ class Sparse4DHead(BaseModule):
                     continue
             elif op == "refine":
                 anchors.append(anchor)
-                if self.use_o2m_loss and self.prediction_length != 0 and "refine_o2m" not in self.operation_order and o2m_instance_feature is not None:
-                    o2m_anchor, o2m_cls, o2m_qt = self.layers[i](
-                        o2m_instance_feature,
-                        anchor,
-                        anchor_embed,
-                        time_interval=time_interval,
-                        # return_cls=(
-                        #     self.training
-                        #     or self.prediction_length == self.num_single_frame_decoder - 1
-                        #     or i == len(self.operation_order) - 1
-                        # ),
-                    )
-                    o2m_prediction.append(o2m_anchor)
-                    o2m_classification.append(o2m_cls)
-                    o2m_quality.append(o2m_qt)
+                # if self.use_o2m_loss and self.prediction_length != 0 and "refine_o2m" not in self.operation_order and o2m_instance_feature is not None:
+                #     o2m_anchor, o2m_cls, o2m_qt = self.layers[i](
+                #         o2m_instance_feature,
+                #         anchor,
+                #         anchor_embed,
+                #         time_interval=time_interval,
+                #         return_cls=(
+                #             self.training
+                #             or self.prediction_length == self.num_single_frame_decoder - 1
+                #             or i == len(self.operation_order) - 1
+                #         ),
+                #     )
+                #     o2m_prediction.append(o2m_anchor)
+                #     o2m_classification.append(o2m_cls)
+                #     o2m_quality.append(o2m_qt)
                     
                 
                 anchor, cls, qt = self.layers[i](
@@ -797,28 +797,26 @@ class Sparse4DHead(BaseModule):
                     anchor,
                     anchor_embed,
                     time_interval=time_interval,
-                    # return_cls=(
-                    #     self.training or 
-                    #     self.prediction_length == self.num_single_frame_decoder - 1
-                    #     or i == len(self.operation_order) - 1
-                    # ),
+                    return_cls=(
+                        self.training or 
+                        self.prediction_length == self.num_single_frame_decoder - 1
+                        or i == len(self.operation_order) - 1
+                    ),
                 )
                 if self.use_o2m_loss and self.first_o2m:
                     if self.prediction_length == 0:
                         o2m_prediction.append(anchor)
                         o2m_classification.append(cls)
                         o2m_quality.append(qt)
-                        self.prediction_length += 1
                     else:
                         prediction.append(anchor)
                         classification.append(cls)
                         quality.append(qt)
-                        self.prediction_length += 1
                 else:
                     prediction.append(anchor)
                     classification.append(cls)
                     quality.append(qt)
-                    self.prediction_length += 1
+                self.prediction_length += 1
                 
                 if self.prediction_length == self.num_single_frame_decoder:
                     instance_feature, anchor = self.instance_bank.update(
@@ -994,19 +992,18 @@ class Sparse4DHead(BaseModule):
             )
 
 
-        if not self.training:
-            instance_id = self.instance_bank.get_instance_id(
-                cls, anchor, self.decoder.score_threshold
-            )
-        else:
-            if instance_id is None:
-                instance_id = cls.new_full(cls.shape, -1)[...,0].long()
-        output["instance_id"] = instance_id
+        # if not self.training:
+        #     instance_id = self.instance_bank.get_instance_id(
+        #         cls, anchor, self.decoder.score_threshold
+        #     )
+        # else:
+        #     if instance_id is None:
+        #         instance_id = cls.new_full(cls.shape, -1)[...,0].long()
+        # output["instance_id"] = instance_id
         self.prediction_length = 0
         if voxel_feature_occ == None:
-            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3) # B, C, H, W, D
+            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3)
         output['instance_feature'] = instance_feature
-        self.instance_bank.cached_vox_feature = voxel_feature_occ.clone().permute(0,1,4,2,3) # B, C, D, H, W
         return output , voxel_feature_occ
     
 
@@ -1017,7 +1014,7 @@ class Sparse4DHead(BaseModule):
         cls_scores = model_outs["classification"]
         reg_preds = model_outs["prediction"]
         quality = model_outs["quality"]
-        instance_id = model_outs["instance_id"]
+        # instance_id = model_outs["instance_id"]
         matching_indices = None
         cal_o2m_loss = False
         if "o2m_classification" in model_outs:
@@ -1029,7 +1026,7 @@ class Sparse4DHead(BaseModule):
             
             
         output = {}
-        gt_idx = [torch.tensor(idx["instance_id"]) for idx in data["img_metas"]]
+        # gt_idx = [torch.tensor(idx["instance_id"]) for idx in data["img_metas"]]
         if self.tracking_train:
             for decoder_idx, (cls, reg, qt) in enumerate(
                 zip(cls_scores, reg_preds, quality)
@@ -1051,7 +1048,7 @@ class Sparse4DHead(BaseModule):
                         data[self.gt_cls_key],
                         data[self.gt_reg_key],
                         instance_id,
-                        gt_idx,
+                        # gt_idx,
                         data['future_gt_bboxes_3d'] if 'future_gt_bboxes_3d' in data else None,
                         layer_idx = decoder_idx,
                     )
@@ -1064,7 +1061,7 @@ class Sparse4DHead(BaseModule):
                         data[self.gt_cls_key],
                         data[self.gt_reg_key],
                         instance_id_track,
-                        gt_idx,
+                        # gt_idx,
                         data['future_gt_bboxes_3d'] if 'future_gt_bboxes_3d' in data else None,
                         layer_idx = decoder_idx,
                     )

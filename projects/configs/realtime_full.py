@@ -11,7 +11,7 @@ work_dir = None
 
 
 total_batch_size = 8
-num_gpus = 4
+num_gpus = 1
 batch_size = total_batch_size // num_gpus
 num_iters_per_epoch = int(28130 // (num_gpus * batch_size))
 # num_iters_per_epoch = int(100// (num_gpus * batch_size))
@@ -106,7 +106,7 @@ group_classes = [17] + [group[-1] for group in group_split]
 
 num_classes = len(class_names)
 embed_dims = 256
-numC_Trans = 64
+numC_Trans = 32
 num_groups = 8
 num_decoder = 6
 num_single_frame_decoder = 1
@@ -210,26 +210,6 @@ model = dict(
         depthnet_cfg=dict(use_dcn=False, aspp_mid_channels=96),
         downsample=16
     ),
-    # inter_voxel_net=dict(
-    #     type='CustomResNet3D',
-    #     numC_input=numC_Trans,
-    #     with_cp=False,
-    #     num_layer=[1,],
-    #     num_channels=[embed_dims,],
-    #     stride=[2,],
-    #     backbone_output_ids=[0,]
-    # ),
-    # voxel_encoder_backbone=dict(
-    #     type='CustomResNet3D',
-    #     numC_input=numC_Trans,
-    #     num_layer=[1, 2, 4],
-    #     with_cp=False,
-    #     num_channels=[numC_Trans,numC_Trans*2,numC_Trans*4],
-    #     stride=[1,2,2],
-    #     backbone_output_ids=[0,1,2]),
-    # voxel_encoder_neck=dict(type='LSSFPN3D',
-    #                           in_channels=numC_Trans*7,
-                            #   out_channels=numC_Trans),
     voxel_encoder_backbone=dict(
         type='CustomResNet3D',
         numC_input=numC_Trans,
@@ -282,11 +262,6 @@ model = dict(
         use_sigmoid=False,
         loss_weight=10.0
     ),
-    # loss_occupancy_aux = dict(
-    #     type = 'Lovasz3DLoss',
-    #     ignore = 17,
-    #     loss_weight=1.0
-    # ),
     head=dict(
         type="Sparse4DHead",
         cls_threshold_to_reg=0.05,
@@ -312,7 +287,7 @@ model = dict(
             type="InstanceBank",
             num_anchor=900,
             embed_dims=embed_dims,
-            anchor="_nuscenes_kmeans900.npy",
+            anchor="nuscenes_kmeans900.npy",
             anchor_handler=dict(type="SparseBox3DKeyPointsGenerator"),
             num_temp_instances=600 if temporal else -1,
             confidence_decay=0.6,
@@ -385,7 +360,9 @@ model = dict(
         interaction_graph_model=dict(
             type="Interaction_Net",
             embed_dims = embed_dims,
+            without_occ = True,
             down_ratio=down_ratio,
+            # without_occ = True,
             conv_cfg=dict(
             type='CustomResNet3D',
             numC_input=embed_dims,
@@ -917,8 +894,8 @@ custom_hooks = [
         priority='NORMAL',
         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
     ),
-    dict(
-        type='SyncbnControlHook',
-        syncbn_start_iter=0,
-    ),
+    # dict(
+    #     type='SyncbnControlHook',
+    #     syncbn_start_iter=0,
+    # ),
 ]

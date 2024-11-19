@@ -21,6 +21,7 @@
 #     FEEDFORWARD_NETWORK,
 # )
 # from mmdet.core import multi_apply
+# import time
 
 # __all__ = ["Interaction_Net"]
 
@@ -224,8 +225,9 @@
         
 #         query_total = 0
 #         i2v_pos = []
-#         # if agent_pos.shape[0] !=1:
+
 #         vox_indices, query_indices = optimized_voxel_extraction(vox_feat, agent_pos, indices, self.vox_lower_point, self.vox_res, self.vox_size)
+
 #         # for b in range(B):
 #         #     bottom_pos = box3d_to_corners(agent_pos[b][indices[b]].unsqueeze(0)).squeeze(0)  # [B, N, 8, 3]
 #         #     vox_pos = ((bottom_pos - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device))
@@ -305,7 +307,7 @@
 #             vox_with_query = vox_with_query.reshape(-1,self.vox_size[0],self.vox_size[1],self.vox_size[2],self.embed_dims)
 
 #             vox_with_query = vox_with_query.permute(0,4,1,2,3) # [B, C, H, W, D]
-#         # #############   Voxel_Net   ################
+#         #############   Voxel_Net   ################
 #         if self.use_vox_atten == False:
 #             for i in range(self.conv3d_layers):
 #                 vox_with_query = self.conv_net[i](vox_with_query)[0]
@@ -437,6 +439,12 @@
 
 #     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
 #         return self.mlp(x)
+
+
+
+
+
+
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -459,28 +467,165 @@ from mmcv.utils import build_from_cfg
 from mmcv.cnn.bricks.registry import (
     FEEDFORWARD_NETWORK,
 )
+from torch import Tensor
 
+import time
 
+torch._C._jit_set_bailout_depth(1) 
 __all__ = ["Interaction_Net"]
 
-
-X, Y, Z, W, L, H, SIN, COS = 0, 1, 2, 3, 4, 5, 6, 7 
-def box3d_to_corners(box3d):
-    # Define constants
+# X, Y, Z, W, L, H, SIN, COS = 0, 1, 2, 3, 4, 5, 6, 7 
+# def box3d_to_corners(box3d):
+#     # Define constants
     
-    boxes = box3d.clone().detach()
-    boxes[..., 3:6] = boxes[..., 3:6].exp()
+#     boxes = box3d.clone().detach()
+#     boxes[..., 3:6] = boxes[..., 3:6].exp()
 
-    corners_norm = torch.stack(torch.meshgrid(torch.arange(2), torch.arange(2), torch.arange(2)), dim=-1).view(-1, 3)
-    corners_norm = corners_norm[[0, 1, 3, 2, 4, 5, 7, 6]] - 0.5
-    corners = boxes[..., None, [W, L, H]] * corners_norm.to(boxes.device).reshape(1, 8, 3)
+#     corners_norm = torch.stack(torch.meshgrid(torch.arange(2), torch.arange(2), torch.arange(2)), dim=-1).view(-1, 3)
+#     corners_norm = corners_norm[[0, 1, 3, 2, 4, 5, 7, 6]] - 0.5
+#     corners = boxes[..., None, [W, L, H]] * corners_norm.to(boxes.device).reshape(1, 8, 3)
 
-    rot_mat = torch.eye(3).unsqueeze(0).unsqueeze(0).repeat(boxes.shape[0], boxes.shape[1], 1, 1).to(boxes.device)
-    rot_mat[..., 0, 0], rot_mat[..., 0, 1], rot_mat[..., 1, 0], rot_mat[..., 1, 1] = boxes[..., COS], -boxes[..., SIN], boxes[..., SIN], boxes[..., COS]
+#     rot_mat = torch.eye(3).unsqueeze(0).unsqueeze(0).repeat(boxes.shape[0], boxes.shape[1], 1, 1).to(boxes.device)
+#     rot_mat[..., 0, 0], rot_mat[..., 0, 1], rot_mat[..., 1, 0], rot_mat[..., 1, 1] = boxes[..., COS], -boxes[..., SIN], boxes[..., SIN], boxes[..., COS]
 
-    corners = (rot_mat.unsqueeze(2) @ corners.unsqueeze(-1)).squeeze(-1)
-    return corners + boxes[..., None, :3] 
+#     corners = (rot_mat.unsqueeze(2) @ corners.unsqueeze(-1)).squeeze(-1)
+#     return corners + boxes[..., None, :3] 
+@torch.jit.script
+def box3d_to_corners(box3d: Tensor, W: int, L: int, H: int, COS: int, SIN: int) -> Tensor:
+    boxes = box3d.clone()
+    boxes[:, 3:6] = boxes[:, 3:6].exp()  # JIT에서는 다차원 슬라이싱도 명확히 표현 필요
 
+    corners_norm = torch.tensor([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+    ], dtype=box3d.dtype, device=box3d.device) - 0.5
+
+    # 필요한 차원별로 명시적 인덱싱
+    sizes = boxes[:, [W, L, H]].unsqueeze(1)  # [N, 1, 3]
+    corners = sizes * corners_norm.unsqueeze(0)  # [N, 8, 3]
+
+    # 회전 행렬 구성
+    cos, sin = boxes[:, COS].unsqueeze(-1), boxes[:, SIN].unsqueeze(-1)
+    rot_mat = torch.zeros(boxes.size(0), 3, 3, dtype=boxes.dtype, device=boxes.device)
+    rot_mat[:, 0, 0] = cos.squeeze(-1)
+    rot_mat[:, 0, 1] = -sin.squeeze(-1)
+    rot_mat[:, 1, 0] = sin.squeeze(-1)
+    rot_mat[:, 1, 1] = cos.squeeze(-1)
+    rot_mat[:, 2, 2] = 1  # Z축 회전은 변경 없음
+
+    # 회전 및 변환
+    corners = torch.matmul(rot_mat.unsqueeze(1), corners.unsqueeze(-1)).squeeze(-1)
+    corners += boxes[:, :3].unsqueeze(1)  # 위치 변환 적용
+    return corners
+
+
+# @torch.jit.script
+# def compute_voxel_indices(agent_pos: Tensor, indices: Tensor, vox_lower_point: Tensor, vox_res: Tensor, 
+#                           vox_size: Tensor, vox_flatten_size: int, batch_num: Tensor, device: torch.device):
+#     vox_indices = torch.empty(0, dtype=torch.long, device=device)
+#     query_indices = torch.empty(0, dtype=torch.long, device=device)
+#     query_total = 0
+
+#     # for b in range(B):
+#     bottom_pos = box3d_to_corners(agent_pos[indices], W=3, L=4, H=5, COS=6, SIN=7)
+#     vox_pos = ((bottom_pos - vox_lower_point) / vox_res).round()  # [N, 8, 3]
+
+#     min_pos = torch.zeros_like(vox_pos.min(dim=1)[0])
+#     max_pos = torch.zeros_like(vox_pos.max(dim=1)[0])
+
+#     min_pos[:, 0] = torch.clamp(vox_pos.min(dim=1)[0].select(1, 0), min=0, max=vox_size[0] - 1)
+#     min_pos[:, 1] = torch.clamp(vox_pos.min(dim=1)[0].select(1, 1), min=0, max=vox_size[1] - 1)
+#     min_pos[:, 2] = torch.clamp(vox_pos.min(dim=1)[0].select(1, 2), min=0, max=vox_size[2] - 1)
+
+#     max_pos[:, 0] = torch.clamp(vox_pos.max(dim=1)[0].select(1, 0), min=0, max=vox_size[0] - 1)
+#     max_pos[:, 1] = torch.clamp(vox_pos.max(dim=1)[0].select(1, 1), min=0, max=vox_size[1] - 1)
+#     max_pos[:, 2] = torch.clamp(vox_pos.max(dim=1)[0].select(1, 2), min=0, max=vox_size[2] - 1)
+#         # Parallelized processing for all boxes
+#     for num in range(vox_pos.shape[0]):
+#         xs = torch.arange(min_pos[num, 0].item(), max_pos[num, 0].item() + 1, device=device)
+#         ys = torch.arange(min_pos[num, 1].item(), max_pos[num, 1].item() + 1, device=device)
+#         zs = torch.arange(min_pos[num, 2].item(), max_pos[num, 2].item() + 1, device=device)
+
+#         # Generate meshgrid and flatten
+#         mesh_index = torch.stack(torch.meshgrid(xs, ys, zs), dim=-1).reshape(-1, 3)
+#         indexes = (
+#             mesh_index[..., 1] * vox_size[1] * vox_size[2]
+#             + mesh_index[..., 0] * vox_size[2]
+#             + mesh_index[..., 2]
+#         )
+#         indexes = torch.clip(indexes, min=0, max=(vox_size[0] * vox_size[1] * vox_size[2] - 1))
+#         indexes += batch_num[num] * vox_flatten_size
+
+#         # Unique indexes and query mapping
+#         unique_indexes = torch.unique(indexes)
+#         vox_indices = torch.cat((vox_indices, unique_indexes))
+#         query_indices = torch.cat((query_indices, torch.full((unique_indexes.size(0),), query_total, dtype=torch.long, device=device)))
+#         query_total += 1
+#     return vox_indices, query_indices
+@torch.jit.script
+def compute_voxel_indices(
+    agent_pos: Tensor, indices: Tensor, vox_lower_point: Tensor, vox_res: Tensor, 
+    vox_size: Tensor, vox_flatten_size: int, batch_num: Tensor, device: torch.device
+):
+    # Bounding box corners
+    bottom_pos = box3d_to_corners(agent_pos[indices], W=3, L=4, H=5, COS=6, SIN=7)
+    vox_pos = ((bottom_pos - vox_lower_point) / vox_res).round()  # [N, 8, 3]
+
+    # Vox size를 각각 분리
+    vox_size_x, vox_size_y, vox_size_z = vox_size[0].item(), vox_size[1].item(), vox_size[2].item()
+
+    # Compute min and max positions for all boxes
+    min_pos = torch.zeros_like(vox_pos.min(dim=1)[0])
+    max_pos = torch.zeros_like(vox_pos.max(dim=1)[0])
+
+    min_pos[:, 0] = torch.clamp(vox_pos.min(dim=1)[0][:, 0], min=0, max=vox_size_x - 1)
+    min_pos[:, 1] = torch.clamp(vox_pos.min(dim=1)[0][:, 1], min=0, max=vox_size_y - 1)
+    min_pos[:, 2] = torch.clamp(vox_pos.min(dim=1)[0][:, 2], min=0, max=vox_size_z - 1)
+
+    max_pos[:, 0] = torch.clamp(vox_pos.max(dim=1)[0][:, 0], min=0, max=vox_size_x - 1)
+    max_pos[:, 1] = torch.clamp(vox_pos.max(dim=1)[0][:, 1], min=0, max=vox_size_y - 1)
+    max_pos[:, 2] = torch.clamp(vox_pos.max(dim=1)[0][:, 2], min=0, max=vox_size_z - 1)
+
+    # Generate voxel indices in a single operation
+    xs = [torch.arange(min_pos[i, 0].item(), max_pos[i, 0].item() + 1, device=device) for i in range(min_pos.size(0))]
+    ys = [torch.arange(min_pos[i, 1].item(), max_pos[i, 1].item() + 1, device=device) for i in range(min_pos.size(0))]
+    zs = [torch.arange(min_pos[i, 2].item(), max_pos[i, 2].item() + 1, device=device) for i in range(min_pos.size(0))]
+
+    # Create full 3D grid per box using list comprehension and tensor stacking
+    mesh_indices = [
+        torch.stack(torch.meshgrid(xs[i], ys[i], zs[i]), dim=-1).reshape(-1, 3) for i in range(len(xs))
+    ]
+
+    # Process all indices in parallel
+    all_indices = []
+    all_queries = []
+    query_total = 0
+
+    for i, mesh_index in enumerate(mesh_indices):
+        # Convert 3D grid to linear indices
+        linear_indices = (
+            mesh_index[:, 1] * vox_size_y * vox_size_z +
+            mesh_index[:, 0] * vox_size_z +
+            mesh_index[:, 2]
+        )
+        # Adjust with batch offsets
+        linear_indices += batch_num[i] * vox_flatten_size
+
+        # Store unique indices and query mappings
+        unique_indices = torch.unique(linear_indices)
+        all_indices.append(unique_indices)
+        all_queries.append(torch.full((unique_indices.size(0),), query_total, dtype=torch.long, device=device))
+        query_total += 1
+
+    # Concatenate all results
+    # all_indices가 [] 인 경우 예외처리로 torch.tensor([])반환
+    if len(all_indices) == 0:
+        return torch.empty(0, dtype=torch.long, device=device), torch.empty(0, dtype=torch.long, device=device)
+
+    vox_indices = torch.cat(all_indices)
+    query_indices = torch.cat(all_queries)
+
+    return vox_indices, query_indices
     
 @PLUGIN_LAYERS.register_module()
 class Interaction_Net(nn.Module):
@@ -580,7 +725,7 @@ class Interaction_Net(nn.Module):
                 vox_feat:torch.Tensor = None,  #[B,H,W,Z,embed_dim]
                 agent_pos: torch.Tensor = None, # [B,N,11]
                 agent_pos_embed: torch.Tensor = None, # [B,N,embed_dim]
-                indices = None,
+                indices = None,  # [B, N]       
                 metas = None,
                 img_feats = None,
                 ref_3d = None,
@@ -599,69 +744,79 @@ class Interaction_Net(nn.Module):
         i2v_pos = []
         if self.img_to_vox:
             vox_feat = vox_feat.view(B, vox_flatten_size, embed)
-            
-            
         
-        for b in range(B):
-            bottom_pos = box3d_to_corners(agent_pos[b][indices[b]].unsqueeze(0)).squeeze(0)  # [B, N, 8, 3]
-            vox_pos = ((bottom_pos - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device))
-                    / torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)).round()
-            min_pos= vox_pos.min(dim=1)[0]
-            max_pos = vox_pos.max(dim=1)[0]
-            min_pos[:,0] = torch.clamp(min_pos[:,0], 0, self.vox_size[0]-1)
-            min_pos[:,1] = torch.clamp(min_pos[:,1], 0, self.vox_size[1]-1)
-            min_pos[:,2] = torch.clamp(min_pos[:,2], 0, self.vox_size[2]-1)
-            max_pos[:,0] = torch.clamp(max_pos[:,0], 0, self.vox_size[0]-1)
-            max_pos[:,1] = torch.clamp(max_pos[:,1], 0, self.vox_size[1]-1)
-            max_pos[:,2] = torch.clamp(max_pos[:,2], 0, self.vox_size[2]-1)
+        batch_sizes = torch.tensor([len(num) for num in indices], device=agent_pos.device)
+        batch_num = torch.arange(len(indices), device=agent_pos.device).repeat_interleave(batch_sizes)
+        indices_tensor = torch.cat(indices, dim=0).to(agent_pos.device)
+        agent_num = agent_pos.shape[1]
+        indices_tensor += batch_num * agent_num  # [N]
+        with torch.no_grad():
+            vox_indices, query_indices = compute_voxel_indices(
+                agent_pos.flatten(0,1), indices_tensor,
+                torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device),
+                torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device),
+                torch.tensor(self.vox_size, dtype=agent_pos.dtype, device=agent_pos.device),
+                vox_flatten_size, batch_num, vox_feat.device
+            )
+        # for b in range(B):
+        #     bottom_pos = box3d_to_corners(agent_pos[b][indices[b]].unsqueeze(0)).squeeze(0)  # [B, N, 8, 3]
+        #     vox_pos = ((bottom_pos - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device))
+        #             / torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)).round()
+        #     min_pos= vox_pos.min(dim=1)[0]
+        #     max_pos = vox_pos.max(dim=1)[0]
+        #     min_pos[:,0] = torch.clamp(min_pos[:,0], 0, self.vox_size[0]-1)
+        #     min_pos[:,1] = torch.clamp(min_pos[:,1], 0, self.vox_size[1]-1)
+        #     min_pos[:,2] = torch.clamp(min_pos[:,2], 0, self.vox_size[2]-1)
+        #     max_pos[:,0] = torch.clamp(max_pos[:,0], 0, self.vox_size[0]-1)
+        #     max_pos[:,1] = torch.clamp(max_pos[:,1], 0, self.vox_size[1]-1)
+        #     max_pos[:,2] = torch.clamp(max_pos[:,2], 0, self.vox_size[2]-1)
+        #     for num in range(vox_pos.shape[0]):
+        #         xs = torch.arange(min_pos[num, 0].item(), max_pos[num, 0].item() + 1, device=vox_feat.device)
+        #         ys = torch.arange(min_pos[num, 1].item(), max_pos[num, 1].item() + 1, device=vox_feat.device)
+        #         zs = torch.arange(min_pos[num, 2].item(), max_pos[num, 2].item() + 1, device=vox_feat.device)
 
-            
-            for num in range(vox_pos.shape[0]):
-                xs = torch.arange(min_pos[num, 0].item(), max_pos[num, 0].item() + 1, device=vox_feat.device)
-                ys = torch.arange(min_pos[num, 1].item(), max_pos[num, 1].item() + 1, device=vox_feat.device)
-                zs = torch.arange(min_pos[num, 2].item(), max_pos[num, 2].item() + 1, device=vox_feat.device)
+        #         mesh_index = torch.stack(torch.meshgrid(xs, ys, zs), dim=-1).reshape(-1, 3)
+        #         if self.img_to_vox:
+        #             i2v_pos.extend(torch.tensor(mesh_index))
+        #         indexes = (mesh_index[..., 1] * self.vox_size[1] * self.vox_size[2] +
+        #                 mesh_index[..., 0] * self.vox_size[2] +
+        #                 mesh_index[..., 2])
+        #         indexes = torch.clip(indexes, min=0, max=(self.vox_size[0] * self.vox_size[1] * self.vox_size[2] - 1))
+        #         indexes += b * vox_flatten_size
+        #         unique_indexes = torch.unique(indexes)
+        #         vox_indices.extend(unique_indexes.tolist())
+        #         query_indices.extend([query_total] * len(unique_indexes))
+        #         query_total+=1
+            # if self.img_to_vox:
+            #     i2v_pos = torch.unique(torch.stack(i2v_pos),dim=0).to(torch.long)
+            #     i2v_indices = torch.tensor(i2v_pos[..., 1]*self.vox_size[1] * self.vox_size[2] +i2v_pos[...,0]*self.vox_size[2]+ i2v_pos[...,2]).to(torch.long)
+            #     occupied_vox = torch.gather(vox_feat[b].clone(), 0, i2v_indices[:,None].repeat(1,vox_feat.shape[-1])).unsqueeze(0) # [1, N, embed_dim]
+            #     bs = occupied_vox.shape[0]
+            #     sampling_offsets = self.sampling_offsets(occupied_vox)
+            #     sampling_offsets = sampling_offsets.view(bs, -1, self.num_points, 3)
+            #     attention_weights = self.attention_weights(occupied_vox) 
+            #     attention_weights = attention_weights.view(bs, -1,  self.num_points*self.num_cams*self.num_levels * self.num_groups)
+            #     attention_weights = attention_weights.softmax(-2).view(bs, -1, self.num_points, self.num_cams, self.num_levels, self.num_groups)
+            #     # offset_normalizer = torch.tensor([vox_feat.shape[1], vox_feat.shape[2],vox_feat.shape[3]]).to(vox_feat.device)
+            #     sampling_locations = i2v_pos[None, :, None, :] + sampling_offsets
+            #     sampling_locations += - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device)
+            #     sampling_locations = sampling_locations * torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)
+            #     points_2d = (
+            #             self.project_points(
+            #                 sampling_locations, #[bs, num_anchor, num_pts, 3]
+            #                 metas["projection_mat"][b:b + 1],
+            #                 metas.get("image_wh")[b:b + 1],
+            #             )
+            #             .permute(0, 2, 3, 1, 4)
+            #             .reshape(bs, -1, self.num_points, self.num_cams, 2)
+            #     )
+            #     img_feat = [img_feats[0][b].unsqueeze(0), img_feats[1].unsqueeze(0), img_feats[2]]
+            #     features = DAF(*img_feat, points_2d, attention_weights).reshape(bs, -1, self.embed_dims)   
+            #     features = self.proj_drop(self.out_proj(features))
+            #     occupied_vox = occupied_vox + features
+            #     vox_feat[b] = torch.scatter(vox_feat[b].clone(),0,i2v_indices[:,None].repeat(1,vox_feat.shape[-1]),occupied_vox.squeeze(0))
+            #     i2v_pos = []
 
-                mesh_index = torch.stack(torch.meshgrid(xs, ys, zs), dim=-1).reshape(-1, 3)
-                if self.img_to_vox:
-                    i2v_pos.extend(torch.tensor(mesh_index))
-                indexes = (mesh_index[..., 1] * self.vox_size[1] * self.vox_size[2] +
-                        mesh_index[..., 0] * self.vox_size[2] +
-                        mesh_index[..., 2])
-                indexes = torch.clip(indexes, min=0, max=(self.vox_size[0] * self.vox_size[1] * self.vox_size[2] - 1))
-                indexes += b * vox_flatten_size
-                unique_indexes = torch.unique(indexes)
-                vox_indices.extend(unique_indexes.tolist())
-                query_indices.extend([query_total] * len(unique_indexes))
-                query_total+=1
-            if self.img_to_vox:
-                i2v_pos = torch.unique(torch.stack(i2v_pos),dim=0).to(torch.long)
-                i2v_indices = torch.tensor(i2v_pos[..., 1]*self.vox_size[1] * self.vox_size[2] +i2v_pos[...,0]*self.vox_size[2]+ i2v_pos[...,2]).to(torch.long)
-                occupied_vox = torch.gather(vox_feat[b].clone(), 0, i2v_indices[:,None].repeat(1,vox_feat.shape[-1])).unsqueeze(0) # [1, N, embed_dim]
-                bs = occupied_vox.shape[0]
-                sampling_offsets = self.sampling_offsets(occupied_vox)
-                sampling_offsets = sampling_offsets.view(bs, -1, self.num_points, 3)
-                attention_weights = self.attention_weights(occupied_vox) 
-                attention_weights = attention_weights.view(bs, -1,  self.num_points*self.num_cams*self.num_levels * self.num_groups)
-                attention_weights = attention_weights.softmax(-2).view(bs, -1, self.num_points, self.num_cams, self.num_levels, self.num_groups)
-                # offset_normalizer = torch.tensor([vox_feat.shape[1], vox_feat.shape[2],vox_feat.shape[3]]).to(vox_feat.device)
-                sampling_locations = i2v_pos[None, :, None, :] + sampling_offsets
-                sampling_locations += - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device)
-                sampling_locations = sampling_locations * torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)
-                points_2d = (
-                        self.project_points(
-                            sampling_locations, #[bs, num_anchor, num_pts, 3]
-                            metas["projection_mat"][b:b + 1],
-                            metas.get("image_wh")[b:b + 1],
-                        )
-                        .permute(0, 2, 3, 1, 4)
-                        .reshape(bs, -1, self.num_points, self.num_cams, 2)
-                )
-                img_feat = [img_feats[0][b].unsqueeze(0), img_feats[1].unsqueeze(0), img_feats[2]]
-                features = DAF(*img_feat, points_2d, attention_weights).reshape(bs, -1, self.embed_dims)   
-                features = self.proj_drop(self.out_proj(features))
-                occupied_vox = occupied_vox + features
-                vox_feat[b] = torch.scatter(vox_feat[b].clone(),0,i2v_indices[:,None].repeat(1,vox_feat.shape[-1]),occupied_vox.squeeze(0))
-                i2v_pos = []
         if self.img_to_vox:
             vox_with_query = vox_feat.reshape(B,H,W,D,-1).permute(0,4,1,2,3)
         
@@ -699,7 +854,7 @@ class Interaction_Net(nn.Module):
             
             query = self.norm_ffn(self.ffn(query))
             vox_with_query = query.reshape(B, H, W, D, embed).permute(0,4,1,2,3)
-            
+
         if not self.without_occ:
             vox_occ = self.up_block(vox_with_query) # (B, C, H, W, D)
             vox_occ = self.vox_occ_net(vox_occ).permute(0,1,3,2,4)  # (B, C, W, H, D)
