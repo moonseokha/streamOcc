@@ -850,16 +850,16 @@ class NuScenes3DDetTrackDataset(Dataset):
                     results, jsonfile_prefix, tracking=tracking
                 )
 
-                if isinstance(result_files, dict):
-                    for name in result_names:
-                        ret_dict = self._evaluate_single(
-                            result_files[name], tracking=tracking
-                        )
-                    results_dict.update(ret_dict)
-                elif isinstance(result_files, str):
-                    results_dict = self._evaluate_single(
+                # if isinstance(result_files, dict):
+                for name in result_names:
+                    ret_dict = self._evaluate_single(
                         result_files, tracking=tracking
                     )
+                results_dict.update(ret_dict)
+                # elif isinstance(result_files, str):
+                #     results_dict = self._evaluate_single(
+                #         result_files, tracking=tracking
+                #     )
                 if tmp_dir is not None:
                     tmp_dir.cleanup()
 

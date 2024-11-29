@@ -14,10 +14,10 @@ def decode_box(box):
     yaw = torch.atan2(box[..., SIN_YAW], box[..., COS_YAW])
     box = torch.cat(
         [
-            box[..., [X, Y, Z]],
-            box[..., [W, L, H]].exp(),
-            yaw[..., None],
-            box[..., VX:],
+            box[:, [X, Y, Z]],
+            torch.clamp(box[:, [W, L, H]].exp(),min=0,max=1e5),
+            yaw[:, None],
+            box[:, VX:],
         ],
         dim=-1,
     )
@@ -318,8 +318,9 @@ class Stage2Assigner(nn.Module):
         cost_box = boxes_iou3d(out_bbox, gt_boxes)
         cost_class = out_prob[:,gt_classes]
         # C = self.coef_box * cost_box + self.coef_cls * cost_class
-        C = (cost_box * (cost_class>self.class_score_thr))
-        # C = cost_box
+        # C = (cost_box * (cost_class>self.class_score_thr))
+        
+        C = cost_box
         C = C.view(num_queries, -1)
 
         return C.T
@@ -340,6 +341,7 @@ class Stage2Assigner(nn.Module):
                 if len(gt_boxes)!=0:
                     
                     cost_matrix = self.get_cost_matrix(pred_logits, pred_boxes, gt_classes, gt_boxes)
+                    cost_matrix = torch.clamp(cost_matrix, min=0, max=1)
                     matched_idxs, matched_labels = self.proposal_matcher(cost_matrix)
                     sampled_idxs, sampled_gt_classes = self._sample_proposals(
                         matched_idxs, matched_labels, gt_classes, batch_size_per_image=num_queries

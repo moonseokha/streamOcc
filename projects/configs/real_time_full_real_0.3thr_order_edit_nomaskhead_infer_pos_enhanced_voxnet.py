@@ -108,7 +108,7 @@ num_classes = len(class_names)
 embed_dims = 256
 numC_Trans = 64
 num_groups = 8
-num_decoder = 5
+num_decoder = 6
 num_single_frame_decoder = 1
 use_deformable_func = True  # mmdet3d_plugin/ops/setup.py needs to be executed
 num_levels = 4
@@ -125,13 +125,13 @@ use_mask_token = False
 use_semantic = True  
 pred_occ = True
 use_occ_loss = False
-img_to_voxel = False
+img_to_voxel = True
 use_temporal=True
 up_sample = True
 # use_occ_focal_loss = True
 num_without_img = 1
 temp_cat_method = 'cat'
-temporal_layers = 0
+temporal_layers = 1
 current_layers = 0
 down_ratio = 4
 downsample_list = [16]
@@ -152,8 +152,8 @@ no_maskhead_infertime = True
 model = dict(
     type="Sparse4D",
     use_grid_mask=False,
-    no_maskhead_infertime=no_maskhead_infertime,
     num_levels=num_levels,
+    no_maskhead_infertime=no_maskhead_infertime,
     grid_config = grid_config,
     use_voxel_feature=use_voxel_feature,
     pred_occ=pred_occ,
@@ -165,13 +165,13 @@ model = dict(
     downsample_list = downsample_list,
     occ_pred_weight=occ_pred_weight,
     occ_seqeunce = occ_seqeunce,
-    # positional_encoding=dict(
-    #     type='CustomLearnedPositionalEncoding3D',
-    #     num_feats=_pos_dim_,
-    #     row_num_embed=100,
-    #     col_num_embed=100,
-    #     tub_num_embed=8
-    # ),
+    positional_encoding=dict(
+        type='CustomLearnedPositionalEncoding3D',
+        num_feats=_pos_dim_,
+        row_num_embed=100,
+        col_num_embed=100,
+        tub_num_embed=8
+    ),
     img_backbone=dict(
         type='ResNet',
         depth=50,
@@ -215,11 +215,13 @@ model = dict(
     voxel_encoder_backbone=dict(
         type='CustomResNet3D',
         numC_input=numC_Trans,
-        num_layer=[1, 2, 2],
+        num_layer=[2, 2],
         with_cp=False,
-        num_channels=[numC_Trans,numC_Trans*2,numC_Trans*2],
-        stride=[1,2,2],
-        backbone_output_ids=[0,1,2]),
+        num_channels=[numC_Trans*2,numC_Trans*2],
+        stride=[2,2],
+        backbone_output_ids=[0,1],
+        return_input_feat=True
+        ),
     voxel_encoder_neck=dict(type='LSSFPN3D_small',
                               in_channels=numC_Trans*5,
                               out_channels=embed_dims,
@@ -233,14 +235,25 @@ model = dict(
         temp_cat_method=temp_cat_method,
         down_ratio = down_ratio,
         num_classes = 18,
+        # conv_cfg=dict(
+        #     type='BottleneckConv3D',
+        #     channels=embed_dims,
+        #     internal_channels=numC_Trans,
+        # ),
+        # conv_cfg=dict(
+        #     type='BottleneckConv3DWithCBAM',
+        #     channels=embed_dims,
+        #     internal_channels=numC_Trans,
+        # ),
+        # conv_cfg=dict(
+        #     type='BottleneckConv3DWithOptimizedCBAM',
+        #     channels=embed_dims,
+        #     internal_channels=numC_Trans,
+        # ),
         conv_cfg=dict(
-            type='CustomResNet3D',
-            numC_input=embed_dims,
-            with_cp=False,
-            num_layer=[1,],
-            num_channels=[embed_dims,],
-            stride=[1,],
-            backbone_output_ids=[0,]
+            type='BottleneckConv3DWithTriPerspectiveCBAM',
+            channels=embed_dims,
+            internal_channels=numC_Trans,
         ),
         fin_conv_cfg=dict(
             type='CustomResNet3D',
@@ -255,7 +268,7 @@ model = dict(
         use_occ_loss=use_occ_loss,
         img_to_voxel= img_to_voxel,
         grid_config=grid_config,
-        pred_occ = False,
+        pred_occ = pred_occ,
         use_mask_token = use_mask_token,
     ),
     cls_freq=nusc_class_frequencies,
@@ -325,28 +338,28 @@ model = dict(
                 "norm",
                 "refine",
             ]
-            * (num_decoder - num_single_frame_decoder - num_without_img)
+            * (num_decoder - num_single_frame_decoder -1)
             + [
                 "temp_gnn",
-                "gnn",
-                "norm",
-                "interaction_gnn_wo_occ",
                 "deformable_vox",
+                "norm",
+                "gnn",
+                # "norm",
                 "ffn_vox",
                 "norm",
                 "refine",
-            ]
-            * (num_without_img-1)
-            + [
-                "temp_gnn",
-                "gnn",
-                "norm",
                 "interaction_gnn",
-                "deformable_vox",
-                "ffn_vox",
-                "norm",
-                "refine",
             ]
+            # * (num_without_img-1)
+            # + [
+            #     "temp_gnn",
+            #     "gnn",
+            #     "norm",
+            #     # "deformable_vox",
+            #     "ffn_vox",
+            #     "norm",
+            #     "refine",
+            # ]
             # +[
             #     "voxel_concat"
             # ]
@@ -363,8 +376,34 @@ model = dict(
         interaction_graph_model=dict(
             type="Interaction_Net",
             embed_dims = embed_dims,
+            # without_occ = True,
             down_ratio=down_ratio,
+            # without_occ = True,
+            # conv_cfg=dict(
+            # type='CustomResNet3D',
+            # numC_input=embed_dims,
+            # with_cp=False,
+            # num_layer=[2,],
+            # num_channels=[embed_dims,],
+            # stride=[1,],
+            # backbone_output_ids=[0,]),
             grid_config=grid_config,
+            # vox_att_cfg = dict(
+            #     type='DeformSelfAttention3D',
+            #     embed_dims=embed_dims,
+            #     num_bev_queue=1,
+            #     num_levels=1,
+            #     num_points=_num_points_self_,
+            # ),
+            ffn=dict(
+                type="AsymmetricFFN",
+                in_channels=embed_dims,
+                embed_dims=embed_dims,
+                feedforward_channels=embed_dims * 2,
+                num_fcs=2,
+                ffn_drop=drop_out,
+                act_cfg=dict(type="ReLU", inplace=True),
+            ),
         ),
         interaction_graph_model_wo_occ=dict(
             type="Interaction_Net",
@@ -418,7 +457,7 @@ model = dict(
         ),
         ffn_vox=dict(
             type="AsymmetricFFN",
-            in_channels=embed_dims * 2,
+            in_channels=embed_dims,
             pre_norm=dict(type="LN"),
             embed_dims=embed_dims,
             feedforward_channels=embed_dims * 4,
@@ -469,7 +508,7 @@ model = dict(
             use_voxel_feature = True,
             use_deformable_func=False,
             use_camera_embed=True,
-            residual_mode="cat",
+            residual_mode="add",
             attn_cfgs=dict(
                 type='DeformCrossAttention3D',
                 embed_dims=embed_dims,
@@ -542,7 +581,6 @@ model = dict(
     ),
     mask_decoder_head=dict(
         type='MaskHead',
-        no_maskhead_infertime=no_maskhead_infertime,
         in_channels=embed_dims,
         embed_dims=embed_dims,
         num_query=100,
@@ -753,6 +791,9 @@ test_pipeline = [
             "timestamp",
             "projection_mat",
             "image_wh",
+            # "gt_depth",
+            "gt_bboxes_3d",
+            "gt_labels_3d",
             "view_tran_comp",
             # "gt_occ",
             "voxel_semantics",

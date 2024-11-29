@@ -11,7 +11,7 @@ work_dir = None
 
 
 total_batch_size = 8
-num_gpus = 2
+num_gpus = 4
 batch_size = total_batch_size // num_gpus
 num_iters_per_epoch = int(28130 // (num_gpus * batch_size))
 # num_iters_per_epoch = int(100// (num_gpus * batch_size))
@@ -108,7 +108,7 @@ num_classes = len(class_names)
 embed_dims = 256
 numC_Trans = 64
 num_groups = 8
-num_decoder = 5
+num_decoder = 6
 num_single_frame_decoder = 1
 use_deformable_func = True  # mmdet3d_plugin/ops/setup.py needs to be executed
 num_levels = 4
@@ -165,13 +165,13 @@ model = dict(
     downsample_list = downsample_list,
     occ_pred_weight=occ_pred_weight,
     occ_seqeunce = occ_seqeunce,
-    # positional_encoding=dict(
-    #     type='CustomLearnedPositionalEncoding3D',
-    #     num_feats=_pos_dim_,
-    #     row_num_embed=100,
-    #     col_num_embed=100,
-    #     tub_num_embed=8
-    # ),
+    positional_encoding=dict(
+        type='CustomLearnedPositionalEncoding3D',
+        num_feats=_pos_dim_,
+        row_num_embed=100,
+        col_num_embed=100,
+        tub_num_embed=8
+    ),
     img_backbone=dict(
         type='ResNet',
         depth=50,
@@ -866,15 +866,15 @@ evaluation = dict(
 )
 
 
-custom_hooks = [
-    dict(
-        type='MEGVIIEMAHook',
-        init_updates=10560,
-        priority='NORMAL',
-        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-    ),
-    dict(
-        type='SyncbnControlHook',
-        syncbn_start_iter=0,
-    ),
-]
+# custom_hooks = [
+#     dict(
+#         type='MEGVIIEMAHook',
+#         init_updates=10560,
+#         priority='NORMAL',
+#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+#     ),
+#     dict(
+#         type='SyncbnControlHook',
+#         syncbn_start_iter=0,
+#     ),
+# ]

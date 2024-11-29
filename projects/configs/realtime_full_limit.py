@@ -108,7 +108,7 @@ num_classes = len(class_names)
 embed_dims = 256
 numC_Trans = 64
 num_groups = 8
-num_decoder = 5
+num_decoder = 6
 num_single_frame_decoder = 1
 use_deformable_func = True  # mmdet3d_plugin/ops/setup.py needs to be executed
 num_levels = 4
@@ -866,15 +866,15 @@ evaluation = dict(
 )
 
 
-custom_hooks = [
-    dict(
-        type='MEGVIIEMAHook',
-        init_updates=10560,
-        priority='NORMAL',
-        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-    ),
-    dict(
-        type='SyncbnControlHook',
-        syncbn_start_iter=0,
-    ),
-]
+# custom_hooks = [
+#     dict(
+#         type='MEGVIIEMAHook',
+#         init_updates=10560,
+#         priority='NORMAL',
+#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+#     ),
+#     dict(
+#         type='SyncbnControlHook',
+#         syncbn_start_iter=0,
+#     ),
+# ]

@@ -56,11 +56,13 @@ class Vox_Convnet(nn.Module):
                  FPN_with_pred = False,
                  save_high_res_feature = False,
                  transformer=None, # IVT transformer
+                 use_upsample = False,
                 #  positional_encoding=None,
                  ):
         super(Vox_Convnet, self).__init__()
         self.attn_drop = attn_drop
         self.embed_dims = embed_dims
+        self.use_upsample = use_upsample
         self.use_occ_loss = use_occ_loss
         self.img_to_voxel = img_to_voxel
         self.save_high_res_feature = save_high_res_feature
@@ -157,7 +159,7 @@ class Vox_Convnet(nn.Module):
             if self.up_sample:
                 deconv_cfg = dict(type='deconv3d', bias=False)
                 out_dims = embed_dims//self.down_ratio
-                if use_temporal:
+                if use_temporal and temporal_layers>0:
                     if self.use_COTR_version:
                         self.up0 = nn.Sequential(
                             nn.ConvTranspose3d(embed_dims,embed_dims//2,(1,3,3),padding=(0,1,1)),
@@ -260,6 +262,7 @@ class Vox_Convnet(nn.Module):
                 occ_pos = None,
                 ref_3d = None,
                 twice_technic = False,
+                inter_feat = None,
                 **kwargs,
                 ) -> torch.Tensor:
         B,C,D,H,W = voxel_feat.shape
@@ -281,7 +284,7 @@ class Vox_Convnet(nn.Module):
         if self.use_temporal:
             query = prev_vox_feat
             for i in range(self.temporal_layers):
-                query = self.temporal_conv_net[i](query)[0] # [B,C,D,H,W]
+                query = self.temporal_conv_net[i](query) # [B,C,D,H,W]
                 bs, C, D, H, W = query.shape
                 if self.use_occ_loss or self.img_to_voxel:
                     query = query.permute(0,3,4,2,1).flatten(1,3) # (bs, C, D, H, W) -> (bs, H, W, D, C) -> (bs, H*W*D, C)
@@ -381,7 +384,7 @@ class Vox_Convnet(nn.Module):
                 query = enhanced_occ_feature.permute(0, 2, 1).view(bs, -1, occ_h, occ_w, occ_z).permute(0,1,4,2,3)
 
             
-            if self.training:
+            if self.training and self.temporal_layers>0:
 
                 if self.pred_occ and self.save_high_res_feature is not True:
                     if self.up_sample:
@@ -408,7 +411,7 @@ class Vox_Convnet(nn.Module):
             query = voxel_feat
         if self.FPN_with_pred is not True:
             for i in range(self.current_layers):
-                query = self.current_conv_net[i](query)[0] # [bs, embed_dims, grid_size[0], grid_size[1], grid_size[2]]
+                query = self.current_conv_net[i](query)# [bs, embed_dims, grid_size[0], grid_size[1], grid_size[2]]
                 
                 bs, C, D, H, W = query.shape
                 
@@ -461,6 +464,7 @@ class Vox_Convnet(nn.Module):
                 #         query = torch.scatter(query,1,occupied_indices.repeat(1,1,query.shape[2]),occupied_query)
                 #     query = query.view(bs,H,W,D,C).permute(0,4,3,1,2) # (bs, H*W*D, C) -> (bs, C, D, H, W)
         # query = self.fin_conv_net(query)[0]
+        
             if self.only_background is not True:
                 if self.pred_occ:
                     if self.up_sample:
