@@ -284,7 +284,7 @@ class Vox_Convnet(nn.Module):
         if self.use_temporal:
             query = prev_vox_feat
             for i in range(self.temporal_layers):
-                query = self.temporal_conv_net[i](query) # [B,C,D,H,W]
+                query = self.temporal_conv_net[i](query)[0] # [B,C,D,H,W]
                 bs, C, D, H, W = query.shape
                 if self.use_occ_loss or self.img_to_voxel:
                     query = query.permute(0,3,4,2,1).flatten(1,3) # (bs, C, D, H, W) -> (bs, H, W, D, C) -> (bs, H*W*D, C)
@@ -411,7 +411,7 @@ class Vox_Convnet(nn.Module):
             query = voxel_feat
         if self.FPN_with_pred is not True:
             for i in range(self.current_layers):
-                query = self.current_conv_net[i](query)# [bs, embed_dims, grid_size[0], grid_size[1], grid_size[2]]
+                query = self.current_conv_net[i](query)[0]# [bs, embed_dims, grid_size[0], grid_size[1], grid_size[2]]
                 
                 bs, C, D, H, W = query.shape
                 

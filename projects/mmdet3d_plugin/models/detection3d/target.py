@@ -726,6 +726,7 @@ class SparseBox3DTarget(BaseTargetWithDenoising):
         box_pred,
         cls_target,
         box_target,
+        return_cost = False,
     ):
         bs, num_pred, num_cls = cls_pred.shape
 
@@ -747,7 +748,8 @@ class SparseBox3DTarget(BaseTargetWithDenoising):
                     )
             instance_reg_weights.append(weights)
         box_cost = self._box_cost(box_pred, box_target, instance_reg_weights)
-
+        if return_cost:
+            return box_cost
         indices = []
         for i in range(bs):
             if cls_cost[i] is not None and box_cost[i] is not None:

@@ -3515,7 +3515,7 @@ class Sparse4D(BaseDetector):
         occ_pos = None
         matching_indices = None
         model_outs = None
-        
+        up_vox_occ = None
         ###############For using multi-frame################
         if self.use_multi_frame:
             image_list = self.image_list.copy()
@@ -3807,7 +3807,7 @@ class Sparse4D(BaseDetector):
             
         if self.use_voxel_feature:
             voxel_feature, depths_voxel,occ_list, vox_occ_list,voxel_feature_list,vox_occ,origin_voxel_feat = self.voxel_encoder(lift_feature, metas=data,img_feats=feature_maps, view_trans_metas=view_trans_metas,prev_voxel_list=prev_voxel_list,mlvl_feats=origin_feature_maps,occ_pos=occ_pos,ref_3d=ref_3d,**data)
-            if self.head is None and self.mask_decoder_head is None:
+            if self.head is None and self.no_maskhead_infertime is True:
                 occ_results = vox_occ_list[-1]
         if self.use_DFA3D:
             feat_flatten, dpt_dist_flatten, spatial_shapes, level_start_index = self.pre_process_DFA3D(feature_maps, depths_voxel)
@@ -3817,14 +3817,17 @@ class Sparse4D(BaseDetector):
             if feature_maps_det is not None:
                 feature_maps = feature_maps_det
             model_outs,voxel_feature,up_vox_occ = self.head(feature_maps=feature_maps, voxel_feature=voxel_feature, metas=data,depth = depths_voxel,occ_pos=occ_pos,ref_3d=ref_3d)
+            if self.no_maskhead_infertime is True:
+                self.head.instance_bank.cached_vox_feature = voxel_feature.permute(0,1,4,2,3) #[B,C,H,W,D]->[B,C,Z,H,W]
+
             if self.mask_decoder_head is None or self.no_maskhead_infertime is True:
                 if "vox_occ" in model_outs:
                     occ_results=model_outs["vox_occ"][-1]
             results = self.head.post_process(model_outs)
-        # occ_results = None
-        if self.use_instance_mask:
-            instance_mask = model_outs["classification"][-1].sigmoid().max(-1)[0] > 0.3
-            instance_queries = model_outs["instance_feature"][instance_mask]
+        # # occ_results = None
+        # if self.use_instance_mask:
+        #     instance_mask = model_outs["classification"][-1].sigmoid().max(-1)[0] > 0.3
+        #     instance_queries = model_outs["instance_feature"][instance_mask]
         # if self.use_instance_mask:
         #     top_k_indices = model_outs["classification"][-1].sigmoid().max(-1)[0].sort()[1][:,:self.num_instanace_query].unsqueeze(-1).repeat(1,1,voxel_feature.shape[1])
         #     instance_queries = torch.gather(model_outs["instance_feature"],1,top_k_indices) # [B, N, C]
@@ -3867,7 +3870,7 @@ class Sparse4D(BaseDetector):
             occ = self.mask_decoder_head.get_occ(outs)
             if self.save_final_feature:
                 if self.head is not None:
-                    self.head.instance_bank.cached_vox_feature = compact_occ.permute(0,1,4,3,2)
+                    self.head.instance_bank.cached_vox_feature = compact_occ.permute(0,1,4,3,2) #[B,C,W,H,Z]->[B,C,Z,H,W]
                 else:
                     self.cached_vox_feature = compact_occ.permute(0,1,4,3,2)
             if type(output) is list:

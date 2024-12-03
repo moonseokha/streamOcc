@@ -30,12 +30,12 @@ log_config = dict(
 )
 load_from = 'ckpt/bevdet-r50-4d-stereo-cbgs.pth'
 # load_from = None
-# resume_from = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet/iter_10548.pth'
+# resume_from = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet_threshold/iter_21096.pth'
 resume_from = None
-# resume_from_EMA = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet/iter_10548_ema.pth'
-resume_from_EMA = None
+# resume_from_EMA = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet_threshold/iter_21096_ema.pth'
+resume_from_EMA=None
 workflow = [("train", 1)]
-fp16 = dict(loss_scale=32.0)
+# fp16 = dict(loss_scale=32.0)
 input_shape = (704, 256)
 
 tracking_test = False
@@ -270,7 +270,7 @@ model = dict(
         use_occ_loss=use_occ_loss,
         img_to_voxel= img_to_voxel,
         grid_config=grid_config,
-        pred_occ = False,
+        pred_occ = pred_occ,
         use_mask_token = use_mask_token,
     ),
     cls_freq=nusc_class_frequencies,
@@ -381,12 +381,14 @@ model = dict(
             # without_occ = True,
             down_ratio=down_ratio,
             # without_occ = True,
-            conv_cfg=dict(
-                type='BottleneckConv3D',
-                channels=embed_dims,
-                internal_channels=numC_Trans,
-            ),
-            query_to_vox=False,
+            # conv_cfg=dict(
+            # type='CustomResNet3D',
+            # numC_input=embed_dims,
+            # with_cp=False,
+            # num_layer=[2,],
+            # num_channels=[embed_dims,],
+            # stride=[1,],
+            # backbone_output_ids=[0,]),
             grid_config=grid_config,
             # vox_att_cfg = dict(
             #     type='DeformSelfAttention3D',
@@ -395,15 +397,15 @@ model = dict(
             #     num_levels=1,
             #     num_points=_num_points_self_,
             # ),
-            # ffn=dict(
-            #     type="AsymmetricFFN",
-            #     in_channels=embed_dims,
-            #     embed_dims=embed_dims,
-            #     feedforward_channels=embed_dims * 2,
-            #     num_fcs=2,
-            #     ffn_drop=drop_out,
-            #     act_cfg=dict(type="ReLU", inplace=True),
-            # ),
+            ffn=dict(
+                type="AsymmetricFFN",
+                in_channels=embed_dims,
+                embed_dims=embed_dims,
+                feedforward_channels=embed_dims * 2,
+                num_fcs=2,
+                ffn_drop=drop_out,
+                act_cfg=dict(type="ReLU", inplace=True),
+            ),
         ),
         interaction_graph_model_wo_occ=dict(
             type="Interaction_Net",
@@ -907,16 +909,16 @@ evaluation = dict(
 )
 
 
-# custom_hooks = [
-#     dict(
-#         type='MEGVIIEMAHook',
-#         init_updates=10560,
-#         priority='NORMAL',
-#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-#         resume = resume_from_EMA,
-#     ),
-#     dict(
-#         type='SyncbnControlHook',
-#         syncbn_start_iter=0,
-#     ),
-# ]
+custom_hooks = [
+    dict(
+        type='MEGVIIEMAHook',
+        init_updates=10560,
+        priority='NORMAL',
+        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+        resume = resume_from_EMA,
+    ),
+    dict(
+        type='SyncbnControlHook',
+        syncbn_start_iter=0,
+    ),
+]

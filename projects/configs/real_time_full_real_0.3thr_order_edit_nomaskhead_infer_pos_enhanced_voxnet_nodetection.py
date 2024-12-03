@@ -30,10 +30,8 @@ log_config = dict(
 )
 load_from = 'ckpt/bevdet-r50-4d-stereo-cbgs.pth'
 # load_from = None
-# resume_from = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet/iter_10548.pth'
+# resume_from = './work_dirs/base_highres_edit_DAP_interactive_CE_linear_2inter_witho2m_BEVStereo_fpn_vox_attn_mask_decoder_loss_scale_no_fpn_little_lr_edited_pano/iter_84384.pth'
 resume_from = None
-# resume_from_EMA = './work_dirs/real_time_full_real_0.3thr_order_edit_nomaskhead_infer_pos_enhanced_voxnet/iter_10548_ema.pth'
-resume_from_EMA = None
 workflow = [("train", 1)]
 fp16 = dict(loss_scale=32.0)
 input_shape = (704, 256)
@@ -127,7 +125,7 @@ use_mask_token = False
 use_semantic = True  
 pred_occ = True
 use_occ_loss = False
-img_to_voxel = False
+img_to_voxel = True
 use_temporal=True
 up_sample = True
 # use_occ_focal_loss = True
@@ -148,7 +146,7 @@ with_o2m = False
 use_different_aug = True
 _pos_dim_ = [96, 96, 64]
 use_mask_head = True
-valid_for_detection = True
+valid_for_detection = False
 no_maskhead_infertime = True
 
 model = dict(
@@ -270,7 +268,7 @@ model = dict(
         use_occ_loss=use_occ_loss,
         img_to_voxel= img_to_voxel,
         grid_config=grid_config,
-        pred_occ = False,
+        pred_occ = pred_occ,
         use_mask_token = use_mask_token,
     ),
     cls_freq=nusc_class_frequencies,
@@ -279,306 +277,308 @@ model = dict(
         use_sigmoid=False,
         loss_weight=10.0
     ),
-    head=dict(
-        type="Sparse4DHead",
-        cls_threshold_to_reg=0.05,
-        num_img_decoder = num_decoder-num_without_img,
-        with_o2m=with_o2m,
-        use_mask_head=use_mask_head,
-        # top_k_thr=top_k_thr,
-        occ_seqeunce = occ_seqeunce,
-        # use_occ_focal_loss = use_occ_focal_loss,
-        use_vox_atten=use_vox_atten,
-        tracking_train=tracking_train,
-        decouple_attn=decouple_attn,
-        save_final_voxel_feature=save_final_voxel_feature,
-        occ_pred_weight=occ_pred_weight,
-        use_nms_filter = use_nms_filter,
-        positional_encoding=dict(
-            type='CustomLearnedPositionalEncoding3D',
-            num_feats=_pos_dim_,
-            row_num_embed=100,
-            col_num_embed=100,
-            tub_num_embed=8
-        ),
-        instance_bank=dict(
-            type="InstanceBank",
-            num_anchor=900,
-            embed_dims=embed_dims,
-            anchor="nuscenes_kmeans900.npy",
-            anchor_handler=dict(type="SparseBox3DKeyPointsGenerator"),
-            num_temp_instances=600 if temporal else -1,
-            confidence_decay=0.6,
-            feat_grad=False,
-        ),
-        anchor_encoder=dict(
-            type="SparseBox3DEncoder",
-            vel_dims=3,
-            embed_dims=[128, 32, 32, 64] if decouple_attn else 256,
-            mode="cat" if decouple_attn else "add",
-            output_fc=not decouple_attn,
-            in_loops=1,
-            out_loops=4 if decouple_attn else 2,
-        ),
-        num_single_frame_decoder=num_single_frame_decoder,
-        operation_order=(
-            [
-                "gnn",
-                "norm",
-                "deformable",
-                "ffn",
-                "norm",
-                "refine",
-            ]
-            * num_single_frame_decoder
-            + [
-                "temp_gnn",
-                "gnn",
-                "norm",
-                "deformable",
-                "ffn",
-                "norm",
-                "refine",
-            ]
-            * (num_decoder - num_single_frame_decoder -1)
-            + [
-                "temp_gnn",
-                "deformable_vox",
-                "norm",
-                "gnn",
-                # "norm",
-                "ffn_vox",
-                "norm",
-                "refine",
-                "interaction_gnn",
-            ]
-            # * (num_without_img-1)
-            # + [
-            #     "temp_gnn",
-            #     "gnn",
-            #     "norm",
-            #     # "deformable_vox",
-            #     "ffn_vox",
-            #     "norm",
-            #     "refine",
-            # ]
-            # +[
-            #     "voxel_concat"
-            # ]
-        )[2:],
-        temp_graph_model=dict(
-            type="MultiheadAttention",
-            embed_dims=embed_dims if not decouple_attn else embed_dims * 2,
-            num_heads=num_groups,
-            batch_first=True,
-            dropout=drop_out,
-        )
-        if temporal
-        else None,
-        interaction_graph_model=dict(
-            type="Interaction_Net",
-            embed_dims = embed_dims,
-            # without_occ = True,
-            down_ratio=down_ratio,
-            # without_occ = True,
-            conv_cfg=dict(
-                type='BottleneckConv3D',
-                channels=embed_dims,
-                internal_channels=numC_Trans,
-            ),
-            query_to_vox=False,
-            grid_config=grid_config,
-            # vox_att_cfg = dict(
-            #     type='DeformSelfAttention3D',
-            #     embed_dims=embed_dims,
-            #     num_bev_queue=1,
-            #     num_levels=1,
-            #     num_points=_num_points_self_,
-            # ),
-            # ffn=dict(
-            #     type="AsymmetricFFN",
-            #     in_channels=embed_dims,
-            #     embed_dims=embed_dims,
-            #     feedforward_channels=embed_dims * 2,
-            #     num_fcs=2,
-            #     ffn_drop=drop_out,
-            #     act_cfg=dict(type="ReLU", inplace=True),
-            # ),
-        ),
-        interaction_graph_model_wo_occ=dict(
-            type="Interaction_Net",
-            embed_dims = embed_dims,
-            down_ratio=down_ratio,
-            conv_cfg=dict(
-            type='CustomResNet3D',
-            numC_input=embed_dims,
-            with_cp=False,
-            num_layer=[2,],
-            num_channels=[embed_dims,],
-            stride=[1,],
-            backbone_output_ids=[0,]),
-            grid_config=grid_config,
-            without_occ = True,
-            vox_att_cfg = dict(
-                type='DeformSelfAttention3D',
-                embed_dims=embed_dims,
-                num_bev_queue=1,
-                num_levels=1,
-                num_points=_num_points_self_,
-            ),
-            ffn=dict(
-                type="AsymmetricFFN",
-                in_channels=embed_dims,
-                embed_dims=embed_dims,
-                feedforward_channels=embed_dims * 2,
-                num_fcs=2,
-                ffn_drop=drop_out,
-                act_cfg=dict(type="ReLU", inplace=True),
-            ),
-        ),
-        graph_model=dict(
-            type="MultiheadAttention",
-            embed_dims=embed_dims if not decouple_attn else embed_dims * 2,
-            num_heads=num_groups,
-            batch_first=True,
-            dropout=drop_out,
-        ),
-        norm_layer=dict(type="LN", normalized_shape=embed_dims),
-        ffn=dict(
-            type="AsymmetricFFN",
-            # in_channels=embed_dims * 3 if (use_deformable_func and use_voxel_feature) else embed_dims * 2,
-            in_channels=embed_dims * 2,
-            pre_norm=dict(type="LN"),
-            embed_dims=embed_dims,
-            feedforward_channels=embed_dims * 4,
-            num_fcs=2,
-            ffn_drop=drop_out,
-            act_cfg=dict(type="ReLU", inplace=True),
-        ),
-        ffn_vox=dict(
-            type="AsymmetricFFN",
-            in_channels=embed_dims,
-            pre_norm=dict(type="LN"),
-            embed_dims=embed_dims,
-            feedforward_channels=embed_dims * 4,
-            num_fcs=2,
-            ffn_drop=drop_out,
-            act_cfg=dict(type="ReLU", inplace=True),
-        ),
-        deformable_model=dict(
-            type="DeformableFeatureAggregation",
-            use_voxel_feature = False,
-            embed_dims=embed_dims,
-            num_groups=num_groups,
-            num_levels=num_levels,
-            num_cams=6,
-            attn_drop=0.15,
-            use_deformable_func=use_deformable_func,
-            use_camera_embed=True,
-            residual_mode="cat",
-            # residual_mode="add",
-            attn_cfgs=dict(
-                type='DeformCrossAttention3D',
-                embed_dims=embed_dims,
-                grid_config=grid_config,
-                num_heads=num_groups,
-                num_levels=1,
-                num_points=num_def_points),
-            kps_generator=dict(
-                type="SparseBox3DKeyPointsGenerator",
-                num_learnable_pts=num_def_points,
-                fix_scale=[
-                    [0, 0, 0],
-                    [0.45, 0, 0],
-                    [-0.45, 0, 0],
-                    [0, 0.45, 0],
-                    [0, -0.45, 0],
-                    [0, 0, 0.45],
-                    [0, 0, -0.45],
-                ],
-            ),
-        ),
-        deformable_model_vox=dict(
-            type="DeformableFeatureAggregation",
-            embed_dims=embed_dims,
-            num_groups=num_groups,
-            num_levels=num_levels,
-            num_cams=6,
-            attn_drop=0.15,
-            use_voxel_feature = True,
-            use_deformable_func=False,
-            use_camera_embed=True,
-            residual_mode="add",
-            attn_cfgs=dict(
-                type='DeformCrossAttention3D',
-                embed_dims=embed_dims,
-                grid_config=grid_config,
-                num_heads=num_groups,
-                num_levels=1,
-                num_points=num_def_points),
-            kps_generator=dict(
-                type="SparseBox3DKeyPointsGenerator",
-                num_learnable_pts=num_def_points,
-                fix_scale=[
-                    [0, 0, 0],
-                    [0.45, 0, 0],
-                    [-0.45, 0, 0],
-                    [0, 0.45, 0],
-                    [0, -0.45, 0],
-                    [0, 0, 0.45],
-                    [0, 0, -0.45],
-                ],
-            ),
-        ),
-        refine_layer=dict(
-            type="SparseBox3DRefinementModule",
-            embed_dims=embed_dims,
-            num_cls=num_classes,
-            refine_yaw=True,
-            with_quality_estimation=with_quality_estimation,
-        ),
-        sampler=dict(
-            type="SparseBox3DTarget",
-            num_dn_groups=5,
-            num_temp_dn_groups=3,
-            dn_noise_scale=[2.0] * 3 + [0.5] * 7,
-            max_dn_gt=32,
-            add_neg_dn=True,
-            cls_weight=2.0,
-            box_weight=0.25,
-            reg_weights=[2.0] * 3 + [0.5] * 3 + [0.0] * 4,
-            cls_wise_reg_weights={
-                class_names.index("traffic_cone"): [
-                    2.0,
-                    2.0,
-                    2.0,
-                    1.0,
-                    1.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    1.0,
-                ],
-            },
-        ),
-        loss_cls=dict(
-            type="FocalLoss",
-            use_sigmoid=True,
-            gamma=2.0,
-            alpha=0.25,
-            loss_weight=2.0,
-        ),
-        loss_reg=dict(
-            type="SparseBox3DLoss",
-            loss_box=dict(type="L1Loss", loss_weight=0.25),
-            loss_centerness=dict(type="CrossEntropyLoss", use_sigmoid=True),
-            loss_yawness=dict(type="GaussianFocalLoss"),
-            cls_allow_reverse=[class_names.index("barrier")],
-        ),
-        decoder=dict(type="SparseBox3DDecoder"),
-        reg_weights=[2.0] * 3 + [1.0] * 7,
-    ),
+    # head=dict(
+    #     type="Sparse4DHead",
+    #     cls_threshold_to_reg=0.05,
+    #     num_img_decoder = num_decoder-num_without_img,
+    #     with_o2m=with_o2m,
+    #     use_mask_head=use_mask_head,
+    #     # top_k_thr=top_k_thr,
+    #     occ_seqeunce = occ_seqeunce,
+    #     # use_occ_focal_loss = use_occ_focal_loss,
+    #     use_vox_atten=use_vox_atten,
+    #     tracking_train=tracking_train,
+    #     decouple_attn=decouple_attn,
+    #     save_final_voxel_feature=save_final_voxel_feature,
+    #     occ_pred_weight=occ_pred_weight,
+    #     use_nms_filter = use_nms_filter,
+    #     positional_encoding=dict(
+    #         type='CustomLearnedPositionalEncoding3D',
+    #         num_feats=_pos_dim_,
+    #         row_num_embed=100,
+    #         col_num_embed=100,
+    #         tub_num_embed=8
+    #     ),
+    #     instance_bank=dict(
+    #         type="InstanceBank",
+    #         num_anchor=900,
+    #         embed_dims=embed_dims,
+    #         anchor="nuscenes_kmeans900.npy",
+    #         anchor_handler=dict(type="SparseBox3DKeyPointsGenerator"),
+    #         num_temp_instances=600 if temporal else -1,
+    #         confidence_decay=0.6,
+    #         feat_grad=False,
+    #     ),
+    #     anchor_encoder=dict(
+    #         type="SparseBox3DEncoder",
+    #         vel_dims=3,
+    #         embed_dims=[128, 32, 32, 64] if decouple_attn else 256,
+    #         mode="cat" if decouple_attn else "add",
+    #         output_fc=not decouple_attn,
+    #         in_loops=1,
+    #         out_loops=4 if decouple_attn else 2,
+    #     ),
+    #     num_single_frame_decoder=num_single_frame_decoder,
+    #     operation_order=(
+    #         [
+    #             "gnn",
+    #             "norm",
+    #             "deformable",
+    #             "ffn",
+    #             "norm",
+    #             "refine",
+    #         ]
+    #         * num_single_frame_decoder
+    #         + [
+    #             "temp_gnn",
+    #             "gnn",
+    #             "norm",
+    #             "deformable",
+    #             "ffn",
+    #             "norm",
+    #             "refine",
+    #         ]
+    #         * (num_decoder - num_single_frame_decoder -1)
+    #         + [
+    #             "temp_gnn",
+    #             "deformable_vox",
+    #             "norm",
+    #             "gnn",
+    #             # "norm",
+    #             "ffn_vox",
+    #             "norm",
+    #             "refine",
+    #             "interaction_gnn",
+    #         ]
+    #         # * (num_without_img-1)
+    #         # + [
+    #         #     "temp_gnn",
+    #         #     "gnn",
+    #         #     "norm",
+    #         #     # "deformable_vox",
+    #         #     "ffn_vox",
+    #         #     "norm",
+    #         #     "refine",
+    #         # ]
+    #         # +[
+    #         #     "voxel_concat"
+    #         # ]
+    #     )[2:],
+    #     temp_graph_model=dict(
+    #         type="MultiheadAttention",
+    #         embed_dims=embed_dims if not decouple_attn else embed_dims * 2,
+    #         num_heads=num_groups,
+    #         batch_first=True,
+    #         dropout=drop_out,
+    #     )
+    #     if temporal
+    #     else None,
+    #     interaction_graph_model=dict(
+    #         type="Interaction_Net",
+    #         embed_dims = embed_dims,
+    #         # without_occ = True,
+    #         down_ratio=down_ratio,
+    #         # without_occ = True,
+    #         # conv_cfg=dict(
+    #         # type='CustomResNet3D',
+    #         # numC_input=embed_dims,
+    #         # with_cp=False,
+    #         # num_layer=[2,],
+    #         # num_channels=[embed_dims,],
+    #         # stride=[1,],
+    #         # backbone_output_ids=[0,]),
+    #         grid_config=grid_config,
+    #         # vox_att_cfg = dict(
+    #         #     type='DeformSelfAttention3D',
+    #         #     embed_dims=embed_dims,
+    #         #     num_bev_queue=1,
+    #         #     num_levels=1,
+    #         #     num_points=_num_points_self_,
+    #         # ),
+    #         ffn=dict(
+    #             type="AsymmetricFFN",
+    #             in_channels=embed_dims,
+    #             embed_dims=embed_dims,
+    #             feedforward_channels=embed_dims * 2,
+    #             num_fcs=2,
+    #             ffn_drop=drop_out,
+    #             act_cfg=dict(type="ReLU", inplace=True),
+    #         ),
+    #     ),
+    #     interaction_graph_model_wo_occ=dict(
+    #         type="Interaction_Net",
+    #         embed_dims = embed_dims,
+    #         down_ratio=down_ratio,
+    #         conv_cfg=dict(
+    #         type='CustomResNet3D',
+    #         numC_input=embed_dims,
+    #         with_cp=False,
+    #         num_layer=[2,],
+    #         num_channels=[embed_dims,],
+    #         stride=[1,],
+    #         backbone_output_ids=[0,]),
+    #         grid_config=grid_config,
+    #         without_occ = True,
+    #         vox_att_cfg = dict(
+    #             type='DeformSelfAttention3D',
+    #             embed_dims=embed_dims,
+    #             num_bev_queue=1,
+    #             num_levels=1,
+    #             num_points=_num_points_self_,
+    #         ),
+    #         ffn=dict(
+    #             type="AsymmetricFFN",
+    #             in_channels=embed_dims,
+    #             embed_dims=embed_dims,
+    #             feedforward_channels=embed_dims * 2,
+    #             num_fcs=2,
+    #             ffn_drop=drop_out,
+    #             act_cfg=dict(type="ReLU", inplace=True),
+    #         ),
+    #     ),
+    #     graph_model=dict(
+    #         type="MultiheadAttention",
+    #         embed_dims=embed_dims if not decouple_attn else embed_dims * 2,
+    #         num_heads=num_groups,
+    #         batch_first=True,
+    #         dropout=drop_out,
+    #     ),
+    #     norm_layer=dict(type="LN", normalized_shape=embed_dims),
+    #     ffn=dict(
+    #         type="AsymmetricFFN",
+    #         # in_channels=embed_dims * 3 if (use_deformable_func and use_voxel_feature) else embed_dims * 2,
+    #         in_channels=embed_dims * 2,
+    #         pre_norm=dict(type="LN"),
+    #         embed_dims=embed_dims,
+    #         feedforward_channels=embed_dims * 4,
+    #         num_fcs=2,
+    #         ffn_drop=drop_out,
+    #         act_cfg=dict(type="ReLU", inplace=True),
+    #     ),
+    #     ffn_vox=dict(
+    #         type="AsymmetricFFN",
+    #         in_channels=embed_dims,
+    #         pre_norm=dict(type="LN"),
+    #         embed_dims=embed_dims,
+    #         feedforward_channels=embed_dims * 4,
+    #         num_fcs=2,
+    #         ffn_drop=drop_out,
+    #         act_cfg=dict(type="ReLU", inplace=True),
+    #     ),
+    #     deformable_model=dict(
+    #         type="DeformableFeatureAggregation",
+    #         use_voxel_feature = False,
+    #         embed_dims=embed_dims,
+    #         num_groups=num_groups,
+    #         num_levels=num_levels,
+    #         num_cams=6,
+    #         attn_drop=0.15,
+    #         use_deformable_func=use_deformable_func,
+    #         use_camera_embed=True,
+    #         residual_mode="cat",
+    #         # residual_mode="add",
+    #         attn_cfgs=dict(
+    #             type='DeformCrossAttention3D',
+    #             embed_dims=embed_dims,
+    #             grid_config=grid_config,
+    #             num_heads=num_groups,
+    #             num_levels=1,
+    #             num_points=num_def_points),
+    #         kps_generator=dict(
+    #             type="SparseBox3DKeyPointsGenerator",
+    #             num_learnable_pts=num_def_points,
+    #             fix_scale=[
+    #                 [0, 0, 0],
+    #                 [0.45, 0, 0],
+    #                 [-0.45, 0, 0],
+    #                 [0, 0.45, 0],
+    #                 [0, -0.45, 0],
+    #                 [0, 0, 0.45],
+    #                 [0, 0, -0.45],
+    #             ],
+    #         ),
+    #     ),
+    #     deformable_model_vox=dict(
+    #         type="DeformableFeatureAggregation",
+    #         embed_dims=embed_dims,
+    #         num_groups=num_groups,
+    #         num_levels=num_levels,
+    #         num_cams=6,
+    #         attn_drop=0.15,
+    #         use_voxel_feature = True,
+    #         use_deformable_func=False,
+    #         use_camera_embed=True,
+    #         residual_mode="add",
+    #         attn_cfgs=dict(
+    #             type='DeformCrossAttention3D',
+    #             embed_dims=embed_dims,
+    #             grid_config=grid_config,
+    #             num_heads=num_groups,
+    #             num_levels=1,
+    #             num_points=num_def_points),
+    #         kps_generator=dict(
+    #             type="SparseBox3DKeyPointsGenerator",
+    #             num_learnable_pts=num_def_points,
+    #             fix_scale=[
+    #                 [0, 0, 0],
+    #                 [0.45, 0, 0],
+    #                 [-0.45, 0, 0],
+    #                 [0, 0.45, 0],
+    #                 [0, -0.45, 0],
+    #                 [0, 0, 0.45],
+    #                 [0, 0, -0.45],
+    #             ],
+    #         ),
+    #     ),
+    #     refine_layer=dict(
+    #         type="SparseBox3DRefinementModule",
+    #         embed_dims=embed_dims,
+    #         num_cls=num_classes,
+    #         refine_yaw=True,
+    #         with_quality_estimation=with_quality_estimation,
+    #     ),
+    #     sampler=dict(
+    #         type="SparseBox3DTarget",
+    #         num_dn_groups=5,
+    #         num_temp_dn_groups=3,
+    #         dn_noise_scale=[2.0] * 3 + [0.5] * 7,
+    #         max_dn_gt=32,
+    #         add_neg_dn=True,
+    #         cls_weight=2.0,
+    #         box_weight=0.25,
+    #         reg_weights=[2.0] * 3 + [0.5] * 3 + [0.0] * 4,
+    #         cls_wise_reg_weights={
+    #             class_names.index("traffic_cone"): [
+    #                 2.0,
+    #                 2.0,
+    #                 2.0,
+    #                 1.0,
+    #                 1.0,
+    #                 1.0,
+    #                 0.0,
+    #                 0.0,
+    #                 1.0,
+    #                 1.0,
+    #             ],
+    #         },
+    #     ),
+    #     loss_cls=dict(
+    #         type="FocalLoss",
+    #         use_sigmoid=True,
+    #         gamma=2.0,
+    #         alpha=0.25,
+    #         loss_weight=2.0,
+    #     ),
+    #     loss_reg=dict(
+    #         type="SparseBox3DLoss",
+    #         loss_box=dict(type="L1Loss", loss_weight=0.25),
+    #         loss_centerness=dict(type="CrossEntropyLoss", use_sigmoid=True),
+    #         loss_yawness=dict(type="GaussianFocalLoss"),
+    #         cls_allow_reverse=[class_names.index("barrier")],
+    #     ),
+    #     decoder=dict(type="SparseBox3DDecoder"),
+    #     reg_weights=[2.0] * 3 + [1.0] * 7,
+    # ),
     mask_decoder_head=dict(
         type='MaskHead',
         in_channels=embed_dims,
@@ -907,16 +907,15 @@ evaluation = dict(
 )
 
 
-# custom_hooks = [
-#     dict(
-#         type='MEGVIIEMAHook',
-#         init_updates=10560,
-#         priority='NORMAL',
-#         split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
-#         resume = resume_from_EMA,
-#     ),
-#     dict(
-#         type='SyncbnControlHook',
-#         syncbn_start_iter=0,
-#     ),
-# ]
+custom_hooks = [
+    dict(
+        type='MEGVIIEMAHook',
+        init_updates=10560,
+        priority='NORMAL',
+        split_iter=num_iters_per_epoch *  checkpoint_epoch_interval,
+    ),
+    dict(
+        type='SyncbnControlHook',
+        syncbn_start_iter=0,
+    ),
+]

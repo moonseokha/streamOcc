@@ -21,6 +21,8 @@ from mmcv.cnn.bricks.registry import (
     FEEDFORWARD_NETWORK,
 )
 from mmdet.core import multi_apply
+from mmcv.cnn.bricks.conv_module import ConvModule
+
 import time
 
 __all__ = ["Interaction_Net"]
@@ -139,7 +141,7 @@ class Interaction_Net(nn.Module):
         self.without_occ = without_occ
         self.use_vox_atten = True if vox_att_cfg is not None else False
         deconv_cfg = dict(type='deconv3d')
-        conv3d_cfg=dict(type='Conv3d')
+        conv3d_cfg=dict(type='Conv3d',bias=False)
         gn_norm_cfg=dict(type='GN', num_groups=16, requires_grad=True)
         out_dims = embed_dims//down_ratio
         self.embed_dims = embed_dims
@@ -203,7 +205,14 @@ class Interaction_Net(nn.Module):
                     nn.BatchNorm3d(out_dims),
                     nn.ReLU(inplace=True),
                 )
-            self.proj_layer = nn.Conv3d(out_dims, embed_dims, 1,1,0)
+            self.proj_layer = ConvModule(
+                                    out_dims,
+                                    embed_dims,
+                                    kernel_size=1,
+                                    stride=1,
+                                    # padding=1,
+                                    bias=True,
+                                    conv_cfg=dict(type='Conv3d'))
             self.vox_occ_net = nn.Conv3d(embed_dims, num_classes, 1,1,0)
             # self.vox_occ_net = build_conv_layer(
             #         conv3d_cfg,
@@ -239,86 +248,85 @@ class Interaction_Net(nn.Module):
         i2v_pos = []
 
         # vox_indices, query_indices = optimized_voxel_extraction(vox_feat, agent_pos, indices, self.vox_lower_point, self.vox_res, self.vox_size)
-
-        for b in range(B):
-            bottom_pos = box3d_to_corners(agent_pos[b][indices[b]].unsqueeze(0)).squeeze(0)  # [B, N, 8, 3]
-            vox_pos = ((bottom_pos - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device))
-                    / torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)).round()
-            min_pos= vox_pos.min(dim=1)[0]
-            max_pos = vox_pos.max(dim=1)[0]
-            min_pos[:,0] = torch.clamp(min_pos[:,0], 0, self.vox_size[0]-1)
-            min_pos[:,1] = torch.clamp(min_pos[:,1], 0, self.vox_size[1]-1)
-            min_pos[:,2] = torch.clamp(min_pos[:,2], 0, self.vox_size[2]-1)
-            max_pos[:,0] = torch.clamp(max_pos[:,0], 0, self.vox_size[0]-1)
-            max_pos[:,1] = torch.clamp(max_pos[:,1], 0, self.vox_size[1]-1)
-            max_pos[:,2] = torch.clamp(max_pos[:,2], 0, self.vox_size[2]-1)
-
-            
-            for num in range(vox_pos.shape[0]):
-                xs = torch.arange(min_pos[num, 0].item(), max_pos[num, 0].item() + 1, device=vox_feat.device)
-                ys = torch.arange(min_pos[num, 1].item(), max_pos[num, 1].item() + 1, device=vox_feat.device)
-                zs = torch.arange(min_pos[num, 2].item(), max_pos[num, 2].item() + 1, device=vox_feat.device)
-
-                mesh_index = torch.stack(torch.meshgrid(xs, ys, zs), dim=-1).reshape(-1, 3)
-                if self.img_to_vox:
-                    i2v_pos.extend(torch.tensor(mesh_index))
-                indexes = (mesh_index[..., 1] * self.vox_size[1] * self.vox_size[2] +
-                        mesh_index[..., 0] * self.vox_size[2] +
-                        mesh_index[..., 2])
-                indexes = torch.clip(indexes, min=0, max=(self.vox_size[0] * self.vox_size[1] * self.vox_size[2] - 1))
-                indexes += b * vox_flatten_size
-                unique_indexes = torch.unique(indexes)
-                vox_indices.extend(unique_indexes.tolist())
-                query_indices.extend([query_total] * len(unique_indexes))
-                query_total+=1
-            if self.img_to_vox:
-                i2v_pos = torch.unique(torch.stack(i2v_pos),dim=0).to(torch.long)
-                i2v_indices = torch.tensor(i2v_pos[..., 1]*self.vox_size[1] * self.vox_size[2] +i2v_pos[...,0]*self.vox_size[2]+ i2v_pos[...,2]).to(torch.long)
-                occupied_vox = torch.gather(vox_feat[b].clone(), 0, i2v_indices[:,None].repeat(1,vox_feat.shape[-1])).unsqueeze(0) # [1, N, embed_dim]
-                bs = occupied_vox.shape[0]
-                sampling_offsets = self.sampling_offsets(occupied_vox)
-                sampling_offsets = sampling_offsets.view(bs, -1, self.num_points, 3)
-                attention_weights = self.attention_weights(occupied_vox) 
-                attention_weights = attention_weights.view(bs, -1,  self.num_points*self.num_cams*self.num_levels * self.num_groups)
-                attention_weights = attention_weights.softmax(-2).view(bs, -1, self.num_points, self.num_cams, self.num_levels, self.num_groups)
-                # offset_normalizer = torch.tensor([vox_feat.shape[1], vox_feat.shape[2],vox_feat.shape[3]]).to(vox_feat.device)
-                sampling_locations = i2v_pos[None, :, None, :] + sampling_offsets
-                sampling_locations += - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device)
-                sampling_locations = sampling_locations * torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)
-                points_2d = (
-                        self.project_points(
-                            sampling_locations, #[bs, num_anchor, num_pts, 3]
-                            metas["projection_mat"][b:b + 1],
-                            metas.get("image_wh")[b:b + 1],
-                        )
-                        .permute(0, 2, 3, 1, 4)
-                        .reshape(bs, -1, self.num_points, self.num_cams, 2)
-                )
-                img_feat = [img_feats[0][b].unsqueeze(0), img_feats[1].unsqueeze(0), img_feats[2]]
-                features = DAF(*img_feat, points_2d, attention_weights).reshape(bs, -1, self.embed_dims)   
-                features = self.proj_drop(self.out_proj(features))
-                occupied_vox = occupied_vox + features
-                vox_feat[b] = torch.scatter(vox_feat[b].clone(),0,i2v_indices[:,None].repeat(1,vox_feat.shape[-1]),occupied_vox.squeeze(0))
-                i2v_pos = []
-
-        # # if self.img_to_vox:
-        # #     vox_with_query = vox_feat.reshape(B,H,W,D,-1).permute(0,4,1,2,3)
-        
         if self.query_to_vox:
-            edge_index_Q2V = torch.stack([torch.tensor(query_indices, device=vox_feat.device, dtype=torch.long),
-                                        torch.tensor(vox_indices, device=vox_feat.device, dtype=torch.long)], dim=0)  
-            
-            # #############   Query to Voxel    #####################
-            selected_agent_feat = torch.cat([agent_feat[b][indices[b]] for b in range(agent_feat.shape[0])],dim=0)
-            if self.use_edge_pos:
-                selected_agent_pos = torch.cat([agent_pos_embed[b][indices[b]] for b in range(agent_pos_embed.shape[0])],dim=0).reshape(-1,self.embed_dims)
-                vox_with_query = self.cross_attn_Q2V(x=(selected_agent_feat,vox_feat.reshape(-1,self.embed_dims)),edge_index=edge_index_Q2V,edge_attr=selected_agent_pos,voxel_pos_embedding=voxel_pos)
-            else:
-                vox_with_query = self.cross_attn_Q2V(x=(selected_agent_feat,vox_feat.reshape(-1,self.embed_dims)),edge_index=edge_index_Q2V,voxel_pos_embedding=voxel_pos)
-            vox_with_query = self.norm_cross(vox_with_query)
-            vox_with_query = vox_with_query.reshape(-1,self.vox_size[0],self.vox_size[1],self.vox_size[2],self.embed_dims)
+            for b in range(B):
+                bottom_pos = box3d_to_corners(agent_pos[b][indices[b]].unsqueeze(0)).squeeze(0)  # [B, N, 8, 3]
+                vox_pos = ((bottom_pos - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device))
+                        / torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)).round()
+                min_pos= vox_pos.min(dim=1)[0]
+                max_pos = vox_pos.max(dim=1)[0]
+                min_pos[:,0] = torch.clamp(min_pos[:,0], 0, self.vox_size[0]-1)
+                min_pos[:,1] = torch.clamp(min_pos[:,1], 0, self.vox_size[1]-1)
+                min_pos[:,2] = torch.clamp(min_pos[:,2], 0, self.vox_size[2]-1)
+                max_pos[:,0] = torch.clamp(max_pos[:,0], 0, self.vox_size[0]-1)
+                max_pos[:,1] = torch.clamp(max_pos[:,1], 0, self.vox_size[1]-1)
+                max_pos[:,2] = torch.clamp(max_pos[:,2], 0, self.vox_size[2]-1)
 
-            vox_with_query = vox_with_query.permute(0,4,1,2,3) # [B, C, H, W, D]
+                
+                for num in range(vox_pos.shape[0]):
+                    xs = torch.arange(min_pos[num, 0].item(), max_pos[num, 0].item() + 1, device=vox_feat.device)
+                    ys = torch.arange(min_pos[num, 1].item(), max_pos[num, 1].item() + 1, device=vox_feat.device)
+                    zs = torch.arange(min_pos[num, 2].item(), max_pos[num, 2].item() + 1, device=vox_feat.device)
+
+                    mesh_index = torch.stack(torch.meshgrid(xs, ys, zs), dim=-1).reshape(-1, 3)
+                    if self.img_to_vox:
+                        i2v_pos.extend(torch.tensor(mesh_index))
+                    indexes = (mesh_index[..., 1] * self.vox_size[1] * self.vox_size[2] +
+                            mesh_index[..., 0] * self.vox_size[2] +
+                            mesh_index[..., 2])
+                    indexes = torch.clip(indexes, min=0, max=(self.vox_size[0] * self.vox_size[1] * self.vox_size[2] - 1))
+                    indexes += b * vox_flatten_size
+                    unique_indexes = torch.unique(indexes)
+                    vox_indices.extend(unique_indexes.tolist())
+                    query_indices.extend([query_total] * len(unique_indexes))
+                    query_total+=1
+                if self.img_to_vox:
+                    i2v_pos = torch.unique(torch.stack(i2v_pos),dim=0).to(torch.long)
+                    i2v_indices = torch.tensor(i2v_pos[..., 1]*self.vox_size[1] * self.vox_size[2] +i2v_pos[...,0]*self.vox_size[2]+ i2v_pos[...,2]).to(torch.long)
+                    occupied_vox = torch.gather(vox_feat[b].clone(), 0, i2v_indices[:,None].repeat(1,vox_feat.shape[-1])).unsqueeze(0) # [1, N, embed_dim]
+                    bs = occupied_vox.shape[0]
+                    sampling_offsets = self.sampling_offsets(occupied_vox)
+                    sampling_offsets = sampling_offsets.view(bs, -1, self.num_points, 3)
+                    attention_weights = self.attention_weights(occupied_vox) 
+                    attention_weights = attention_weights.view(bs, -1,  self.num_points*self.num_cams*self.num_levels * self.num_groups)
+                    attention_weights = attention_weights.softmax(-2).view(bs, -1, self.num_points, self.num_cams, self.num_levels, self.num_groups)
+                    # offset_normalizer = torch.tensor([vox_feat.shape[1], vox_feat.shape[2],vox_feat.shape[3]]).to(vox_feat.device)
+                    sampling_locations = i2v_pos[None, :, None, :] + sampling_offsets
+                    sampling_locations += - torch.tensor(self.vox_lower_point, dtype=agent_pos.dtype, device=agent_pos.device)
+                    sampling_locations = sampling_locations * torch.tensor(self.vox_res, dtype=agent_pos.dtype, device=agent_pos.device)
+                    points_2d = (
+                            self.project_points(
+                                sampling_locations, #[bs, num_anchor, num_pts, 3]
+                                metas["projection_mat"][b:b + 1],
+                                metas.get("image_wh")[b:b + 1],
+                            )
+                            .permute(0, 2, 3, 1, 4)
+                            .reshape(bs, -1, self.num_points, self.num_cams, 2)
+                    )
+                    img_feat = [img_feats[0][b].unsqueeze(0), img_feats[1].unsqueeze(0), img_feats[2]]
+                    features = DAF(*img_feat, points_2d, attention_weights).reshape(bs, -1, self.embed_dims)   
+                    features = self.proj_drop(self.out_proj(features))
+                    occupied_vox = occupied_vox + features
+                    vox_feat[b] = torch.scatter(vox_feat[b].clone(),0,i2v_indices[:,None].repeat(1,vox_feat.shape[-1]),occupied_vox.squeeze(0))
+                    i2v_pos = []
+
+            # # if self.img_to_vox:
+            # #     vox_with_query = vox_feat.reshape(B,H,W,D,-1).permute(0,4,1,2,3)
+            
+                edge_index_Q2V = torch.stack([torch.tensor(query_indices, device=vox_feat.device, dtype=torch.long),
+                                            torch.tensor(vox_indices, device=vox_feat.device, dtype=torch.long)], dim=0)  
+                
+                # #############   Query to Voxel    #####################
+                selected_agent_feat = torch.cat([agent_feat[b][indices[b]] for b in range(agent_feat.shape[0])],dim=0)
+                if self.use_edge_pos:
+                    selected_agent_pos = torch.cat([agent_pos_embed[b][indices[b]] for b in range(agent_pos_embed.shape[0])],dim=0).reshape(-1,self.embed_dims)
+                    vox_with_query = self.cross_attn_Q2V(x=(selected_agent_feat,vox_feat.reshape(-1,self.embed_dims)),edge_index=edge_index_Q2V,edge_attr=selected_agent_pos,voxel_pos_embedding=voxel_pos)
+                else:
+                    vox_with_query = self.cross_attn_Q2V(x=(selected_agent_feat,vox_feat.reshape(-1,self.embed_dims)),edge_index=edge_index_Q2V,voxel_pos_embedding=voxel_pos)
+                vox_with_query = self.norm_cross(vox_with_query)
+                vox_with_query = vox_with_query.reshape(-1,self.vox_size[0],self.vox_size[1],self.vox_size[2],self.embed_dims)
+
+                vox_with_query = vox_with_query.permute(0,4,1,2,3) # [B, C, H, W, D]
         else:
             vox_with_query =  vox_feat.reshape(B,H,W,D,-1).permute(0,4,1,2,3)
         ############   Voxel_Net   ################

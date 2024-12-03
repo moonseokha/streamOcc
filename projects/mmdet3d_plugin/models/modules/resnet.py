@@ -260,7 +260,7 @@ class BottleneckConv3DWithCBAM(nn.Module):
         
         out += identity
         out = self.relu(out)
-        return out
+        return [out]
     
     
 @BACKBONES.register_module()
@@ -287,7 +287,7 @@ class BottleneckConv3D(nn.Module):
         
         out += identity
         out = self.relu(out)
-        return out
+        return [out]
 
 
 class OptimizedCBAM3D(nn.Module):
@@ -375,7 +375,7 @@ class BottleneckConv3DWithOptimizedCBAM(nn.Module):
         # Residual Connection
         out += identity
         out = self.relu(out)
-        return out
+        return [out]
     
 @BACKBONES.register_module()
 class BottleneckConv3DWithTriPerspectiveCBAM(nn.Module):
@@ -407,7 +407,7 @@ class BottleneckConv3DWithTriPerspectiveCBAM(nn.Module):
         # Residual Connection
         out += identity
         out = self.relu(out)
-        return out
+        return [out]
     
     
 class TriPerspectiveOptimizedCBAM3D(nn.Module):

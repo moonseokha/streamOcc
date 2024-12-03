@@ -2205,7 +2205,7 @@ class Sparse4DHead(BaseModule):
                         metas[self.gt_reg_key],
                         )
 
-                        o2m_indices,cost_matrix = self.matcher_o2m(o2m_cls,o2m_reg, metas[self.gt_cls_key],metas[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
+                        cost_matrix = self.matcher_o2m(o2m_cls,o2m_reg, metas[self.gt_cls_key],metas[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
                         if self.with_o2m:
                             for j in range(len(o2m_indices)):
                                 # iou_cost = cost_matrix[j][o2o_indices[j][1],o2o_indices[j][0]] # [gt_ind]
@@ -2314,32 +2314,55 @@ class Sparse4DHead(BaseModule):
                         
                         o2m_reg = prediction[-1].clone().detach()[:,:num_free_instance][..., : len(self.reg_weights)]
                         o2m_cls = classification[-1].clone().detach()[:,:num_free_instance]
+                        cls_mask = o2m_cls.max(-1)[0].sigmoid()>self.nms_thr
                         # data_reg_target = self.sampler.encode_reg_target(metas[self.gt_reg_key],o2m_reg.device)
-                        
-                        # _, _, _, _, _ ,_,o2o_indices= self.sampler.sample(
-                        # o2m_cls.clone(),
-                        # o2m_reg.clone(),
-                        # metas[self.gt_cls_key],
-                        # metas[self.gt_reg_key],
-                        # )
-                        o2m_indices,cost_matrix = self.matcher_o2m(o2m_cls,o2m_reg, metas[self.gt_cls_key],metas[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
-                        for j in range(len(o2m_indices)):
-                            # iou_cost = cost_matrix[j][o2o_indices[j][1],o2o_indices[j][0]] # [gt_ind]
-                            # iou_mask = (iou_cost > 0.4)
-                            indices_j = o2m_indices[j][0]
-                            if indices_j.shape[0] == 0:
+                        # cls_index = o2m_cls.
+                        box_cost= self.sampler.sample(
+                        o2m_cls.clone(),
+                        o2m_reg.clone(),
+                        metas[self.gt_cls_key],
+                        metas[self.gt_reg_key],
+                        return_cost=True,
+                        )
+                        cost_matrix = self.matcher_o2m(o2m_cls,o2m_reg, metas[self.gt_cls_key],metas[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
+                        # pdb.set_trace()
+
+                        for j in range(len(cost_matrix)):
+                            indices_mask = torch.where(torch.logical_or(box_cost[j][cls_mask[j]].min(-1)[0] < 1.5,cost_matrix[j][:,cls_mask[j]].max(0)[0]>0.3))[0]
+                            if indices_mask.shape[0] == 0:
                                 all_filter_flag[j] = True
                                 indices = torch.tensor([0],device=voxel_feature.device)
-                                # above_thr = (classification[-1][j,:num_free_instance].sigmoid().max(dim=-1)[0]>0.3).sum()
-                                # if above_thr>0:
-                                #     print("non_filtered query but over score 0.3: ",above_thr)
                             else:
-                                # o2m_indices[j][0]에 있는 index 중 o2o_indices[j][0]에 포함되어 있는 index만 가져온다.
-                                # print("filtered number of queries: ",indices_j.shape[0])
-                                # print("over score 0.3: ",(classification[-1][j,:num_free_instance].sigmoid().max(dim=-1)[0]>0.3).sum())
-                                indices = indices_j
+                                indices = torch.where(cls_mask[j])[0][indices_mask]
+                                
+                            # cost = cost_matrix[j]
+                            # iou_mask = (cost > 0.4)
+                            # # cls_score,cls_indcies = o2m_cls[j].sigmoid().max(dim=-1)
+                            # cls_score = o2m_cls[j][:,metas[self.gt_cls_key][j]].sigmoid()
+                            # cls_mask = cls_score>0.3
+                            # indices_j = torch.where(cls_mask & iou_mask.permute(1,0))[0]
+                            # if indices_j.shape[0] == 0:
+                            #     all_filter_flag[j] = True
+                            #     indices = torch.tensor([0],device=voxel_feature.device)
                             # else:
-                                # indices = torch.unique(torch.cat([o2o_indices[j][0],o2m_indices[j][0]],dim=0))
+                            #     indices = indices_j
+                        # for j in range(len(o2m_indices)):
+                        #     # iou_cost = cost_matrix[j][o2o_indices[j][1],o2o_indices[j][0]] # [gt_ind]
+                        #     # iou_mask = (iou_cost > 0.4)
+                        #     indices_j = o2m_indices[j][0]
+                        #     if indices_j.shape[0] == 0:
+                        #         all_filter_flag[j] = True
+                        #         indices = torch.tensor([0],device=voxel_feature.device)
+                        #         # above_thr = (classification[-1][j,:num_free_instance].sigmoid().max(dim=-1)[0]>0.3).sum()
+                        #         # if above_thr>0:
+                        #         #     print("non_filtered query but over score 0.3: ",above_thr)
+                        #     else:
+                        #         # o2m_indices[j][0]에 있는 index 중 o2o_indices[j][0]에 포함되어 있는 index만 가져온다.
+                        #         # print("filtered number of queries: ",indices_j.shape[0])
+                        #         # print("over score 0.3: ",(classification[-1][j,:num_free_instance].sigmoid().max(dim=-1)[0]>0.3).sum())
+                        #         indices = indices_j
+                        #     # else:
+                        #         # indices = torch.unique(torch.cat([o2o_indices[j][0],o2m_indices[j][0]],dim=0))
 
                             cls_index.append(indices)
                     else:
@@ -2413,6 +2436,7 @@ class Sparse4DHead(BaseModule):
                     voxel_pos = voxel_pos,
                 )
 
+                voxel_feature_occ = voxel_feature.permute(0,4,1,2,3) # [B,H,W,D,C] -> [B,C,H,W,D]
                 if vox_occ is not None:
                     vox_occ_list.append(vox_occ)
             elif op =="ffn_o2m" or op =="norm_o2m":
@@ -2717,7 +2741,8 @@ class Sparse4DHead(BaseModule):
         # output["instance_id"] = instance_id
         self.prediction_length = 0
         if voxel_feature_occ == None:
-            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3)
+            voxel_feature_occ = voxel_feature.permute(0,4,1,2,3) # [B,C,H,W,D]
+        
         output['instance_feature'] = instance_feature
         return output , voxel_feature_occ, up_vox_occ
     
@@ -2957,7 +2982,7 @@ class Sparse4DHead(BaseModule):
                     #             o2o_indices = o2o_indices_list[decoder_idx-1]
                     #     else:
                     #         o2o_indices = o2o_indices_list[decoder_idx+1]
-                    o2m_indices,cost_matrix = self.matcher_o2m(cls,o2m_reg, data[self.gt_cls_key],data[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
+                    o2m_indices = self.matcher_o2m(cls,o2m_reg, data[self.gt_cls_key],data[self.gt_reg_key]) # [pred_ind,gt_ind]
                     bs, num_pred, num_cls = cls.shape
                     o2m_cls_target = (data[self.gt_cls_key][0].new_ones([bs, num_pred], dtype=torch.long) * num_cls)
                     o2m_reg_target = o2m_reg.new_zeros(o2m_reg.shape)
@@ -3103,7 +3128,7 @@ class Sparse4DHead(BaseModule):
                                 o2o_indices = o2o_indices_list[decoder_idx-1]
                         else:
                             o2o_indices = o2o_indices_list[decoder_idx+1]
-                    o2m_indices,cost_matrix = self.matcher_o2m(o2m_cls,o2m_reg, data[self.gt_cls_key],data[self.gt_reg_key],return_cost_matrix=True) # [pred_ind,gt_ind]
+                    o2m_indices = self.matcher_o2m(o2m_cls,o2m_reg, data[self.gt_cls_key],data[self.gt_reg_key]) # [pred_ind,gt_ind]
                     bs, num_pred, num_cls = o2m_cls.shape
                     o2m_cls_target = (data[self.gt_cls_key][0].new_ones([bs, num_pred], dtype=torch.long) * num_cls)
                     o2m_reg_target = o2m_reg.new_zeros(o2m_reg.shape)

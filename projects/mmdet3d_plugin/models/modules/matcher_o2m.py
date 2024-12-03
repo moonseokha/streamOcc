@@ -316,13 +316,16 @@ class Stage2Assigner(nn.Module):
         out_bbox = decode_box(out_bbox)[...,[X,Y,Z,W,L,H,YAW]]
         gt_boxes = gt_boxes[...,[X,Y,Z,W,L,H,YAW]]
         cost_box = boxes_iou3d(out_bbox, gt_boxes)
-        cost_class = out_prob[:,gt_classes]
+        # conver nan to 0
+        # cost_box = torch.nan_to_num(cost_box)
+        
+        # cost_class = out_prob[:,gt_classes]
         # C = self.coef_box * cost_box + self.coef_cls * cost_class
         # C = (cost_box * (cost_class>self.class_score_thr))
-        
+        # C = torch.nan_to_num(C)
         C = cost_box
         C = C.view(num_queries, -1)
-
+        C = torch.nan_to_num(C)
         return C.T
 
     def forward(self, cls,reg, targets_cls,target_box, return_cost_matrix=False):
@@ -339,9 +342,11 @@ class Stage2Assigner(nn.Module):
                 gt_boxes = target_box[b]
                 gt_classes = targets_cls[b]
                 if len(gt_boxes)!=0:
-                    
                     cost_matrix = self.get_cost_matrix(pred_logits, pred_boxes, gt_classes, gt_boxes)
                     cost_matrix = torch.clamp(cost_matrix, min=0, max=1)
+                    if return_cost_matrix:
+                        cost_matrices.append(cost_matrix)
+                        continue
                     matched_idxs, matched_labels = self.proposal_matcher(cost_matrix)
                     sampled_idxs, sampled_gt_classes = self._sample_proposals(
                         matched_idxs, matched_labels, gt_classes, batch_size_per_image=num_queries
@@ -358,5 +363,5 @@ class Stage2Assigner(nn.Module):
                     indices.append([None,None])
                     cost_matrices.append(None)
         if return_cost_matrix:
-            return indices, cost_matrices
+            return cost_matrices
         return indices
